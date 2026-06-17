@@ -10,6 +10,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// SwarmConfig holds the SWIM gossip layer parameters.
+type SwarmConfig struct {
+	Name      string   `yaml:"name"`
+	Bind      string   `yaml:"bind"`
+	Peers     []string `yaml:"peers"`
+	GossipKey string   `yaml:"gossip_key"`
+}
+
 // Config is the top-level Fortress configuration.
 type Config struct {
 	Engine     EngineConfig `yaml:"engine"`
