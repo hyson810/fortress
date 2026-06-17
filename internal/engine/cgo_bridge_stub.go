@@ -35,3 +35,4 @@ func BlockIPFFI(ip uint32) error {
 
 // CloseFFI is a stub for non-Linux platforms.
 func CloseFFI() error { return nil }
+func IsFFILoaded() bool { return false }
