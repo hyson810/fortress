@@ -202,7 +202,7 @@ func ValidateTarget(target string) error {
 		return nil
 	}
 	// Basic sanity: reject obviously dangerous strings
-	if strings.ContainsAny(target, ";&|`$(){}[]<>") {
+	if strings.ContainsAny(target, ";&|`$(){}[]<>\n\r\t ") {
 		return fmt.Errorf("target contains invalid characters")
 	}
 	return nil
