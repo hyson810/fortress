@@ -1,3 +1,7 @@
-target/
+/target/
+/muscle/target/
+**/*.o
+/fortress
+.DS_Store
 **/*.rs.bk
 Cargo.lock
