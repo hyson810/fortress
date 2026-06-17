@@ -3,93 +3,28 @@ package config
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-// SwarmConfig holds the SWIM gossip layer parameters.
-type SwarmConfig struct {
-	Name      string   `yaml:"name"`
-	Bind      string   `yaml:"bind"`
-	Peers     []string `yaml:"peers"`
-	GossipKey string   `yaml:"gossip_key"`
-}
-
-// Config is the top-level Fortress configuration.
+// Config is the top-level Fortress configuration
 type Config struct {
-	Engine     EngineConfig  `yaml:"engine"`
-	Brain      BrainConfig   `yaml:"brain"`
-	Weapons    WeaponsConfig `yaml:"weapons"`
-	Swarm      SwarmConfig   `yaml:"swarm"`
-	Whitelist  []string      `yaml:"whitelist"`
-	LogDir     string        `yaml:"log_dir"`
+	Swarm      SwarmConfig      `yaml:"swarm"`
+	Engine     EngineConfig     `yaml:"engine"`
+	Brain      BrainConfig      `yaml:"brain"`
+	Weapons    WeaponsConfig    `yaml:"weapons"`
+	Whitelist  []string         `yaml:"whitelist"`
+	LogDir     string           `yaml:"log_dir"`
 	mu         sync.RWMutex
 	path       string
-	parsedCIDRs []net.IPNet // pre-parsed CIDR whitelist entries
-}
-
-// EngineConfig holds L1 packet engine thresholds.
-type EngineConfig struct {
-	SynFloodPPS  int `yaml:"syn_flood_pps"`
-	UdpFloodPPS  int `yaml:"udp_flood_pps"`
-	IcmpFloodPPS int `yaml:"icmp_flood_pps"`
-	MaxPPS       int `yaml:"max_pps"`
-}
-
-// BrainConfig holds the scoring and response configuration.
-type BrainConfig struct {
-	AggressiveMode bool `yaml:"aggressive_mode"`
-	BanDuration    int  `yaml:"ban_duration"` // seconds
-}
-
-// WeaponsConfig holds external tool paths and wordlist locations
-// for Kali Fusion weapon orchestration.
-type WeaponsConfig struct {
-	NmapBin       string `yaml:"nmap_bin"`
-	NucleiBin     string `yaml:"nuclei_bin"`
-	HydraBin      string `yaml:"hydra_bin"`
-	SqlmapBin     string `yaml:"sqlmap_bin"`
-	MsfBin        string `yaml:"msf_bin"`
-	Wordlists     string `yaml:"wordlists"`
-	MaxConcurrent int    `yaml:"max_concurrent"`
-}
-
-// Default returns a working default configuration.
-func Default() *Config {
-	defaultWhitelist := []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
-	return &Config{
-		Engine: EngineConfig{
-			SynFloodPPS:  80,
-			UdpFloodPPS:  200,
-			IcmpFloodPPS: 50,
-			MaxPPS:       1000000,
-		},
-		Brain: BrainConfig{
-			AggressiveMode: false,
-			BanDuration:    1800,
-		},
-		Swarm: SwarmConfig{
-			Name:      "hive-01",
-			Bind:      "0.0.0.0:9700",
-			Peers:     []string{},
-			GossipKey: "",
-		},
-		Weapons: WeaponsConfig{
-			NmapBin:       "/usr/bin/nmap",
-			NucleiBin:     "/usr/local/bin/nuclei",
-			HydraBin:      "/usr/bin/hydra",
-			SqlmapBin:     "/usr/bin/sqlmap",
-			MsfBin:        "/usr/bin/msfconsole",
-			Wordlists:     "/usr/share/wordlists",
-			MaxConcurrent: 50,
-		},
-		Whitelist:   defaultWhitelist,
-		LogDir:      "logs",
-		parsedCIDRs: parseCIDRList(defaultWhitelist),
-	}
+	lastMod    time.Time
+	watchers   []func(*Config)
+	parsedCIDRs []net.IPNet    // pre-parsed CIDR whitelist entries
 }
 
 // parseCIDRList parses a list of strings into net.IPNet entries for those
@@ -110,7 +45,82 @@ func parseCIDRList(entries []string) []net.IPNet {
 	return cidrs
 }
 
-// Load reads config from YAML file.
+type SwarmConfig struct {
+	Name      string   `yaml:"name"`
+	Bind      string   `yaml:"bind"`
+	Peers     []string `yaml:"peers"`
+	GossipKey string   `yaml:"gossip_key"`
+}
+
+type EngineConfig struct {
+	XDPMode      string `yaml:"xdp_mode"`
+	AFXDQueue    int    `yaml:"af_xdp_queue"`
+	MaxPPS       int    `yaml:"max_pps"`
+	CPUPin       []int  `yaml:"cpu_pin"`
+	SynFloodPPS  int    `yaml:"syn_flood_pps"`
+	UdpFloodPPS  int    `yaml:"udp_flood_pps"`
+	IcmpFloodPPS int    `yaml:"icmp_flood_pps"`
+	RunUID       int    `yaml:"run_uid"` // UID to drop privileges to (default 65534 = nobody)
+	RunGID       int    `yaml:"run_gid"` // GID to drop privileges to (default 65534 = nogroup)
+}
+
+type BrainConfig struct {
+	RulesDir                string  `yaml:"rules_dir"`
+	MLModel                 string  `yaml:"ml_model"`
+	AutoCounterstrike       bool    `yaml:"auto_counterstrike"`
+	CounterstrikeThreshold  float64 `yaml:"counterstrike_threshold"`
+	BanDuration             int     `yaml:"ban_duration"`
+}
+
+type WeaponsConfig struct {
+	NmapBin       string `yaml:"nmap_bin"`
+	NucleiBin     string `yaml:"nuclei_bin"`
+	HydraBin      string `yaml:"hydra_bin"`
+	SqlmapBin     string `yaml:"sqlmap_bin"`
+	MsfBin        string `yaml:"msf_bin"`
+	Wordlists     string `yaml:"wordlists"`
+	MaxConcurrent int    `yaml:"max_concurrent"`
+}
+
+// Default returns a working default configuration
+func Default() *Config {
+	defaultWhitelist := []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
+	return &Config{
+		Swarm: SwarmConfig{
+			Name: "hive-01",
+			Bind: "0.0.0.0:9700",
+		},
+		Engine: EngineConfig{
+			XDPMode:      "generic",
+			MaxPPS:       1000000,
+			SynFloodPPS:  80,
+			UdpFloodPPS:  200,
+			IcmpFloodPPS: 50,
+			RunUID:       65534, // nobody
+			RunGID:       65534, // nogroup
+		},
+		Brain: BrainConfig{
+			RulesDir:               "/etc/fortress/rules.d",
+			AutoCounterstrike:      false,
+			CounterstrikeThreshold: 85.0,
+			BanDuration:            1800,
+		},
+		Weapons: WeaponsConfig{
+			NmapBin:       "/usr/bin/nmap",
+			NucleiBin:     "/usr/local/bin/nuclei",
+			HydraBin:      "/usr/bin/hydra",
+			SqlmapBin:     "/usr/bin/sqlmap",
+			MsfBin:        "/usr/bin/msfconsole",
+			Wordlists:     "/usr/share/wordlists",
+			MaxConcurrent: 50,
+		},
+		Whitelist:   defaultWhitelist,
+		LogDir:      "logs",
+		parsedCIDRs: parseCIDRList(defaultWhitelist),
+	}
+}
+
+// Load reads config from YAML file
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -125,8 +135,13 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	// Override from environment
+	if v := os.Getenv("FORTRESS_SWARM_NAME"); v != "" { cfg.Swarm.Name = v }
+	if v := os.Getenv("FORTRESS_GOSSIP_KEY"); v != "" { cfg.Swarm.GossipKey = v }
+
 	// Re-parse CIDRs in case the YAML overrode the whitelist.
 	cfg.parsedCIDRs = parseCIDRList(cfg.Whitelist)
+
 	cfg.path = path
 
 	if err := cfg.Validate(); err != nil {
@@ -136,11 +151,95 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// OnChange registers a callback for config hot-reload
+func (c *Config) OnChange(fn func(*Config)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.watchers = append(c.watchers, fn)
+}
+
+// Watch polls for config file changes and triggers callbacks
+func (c *Config) Watch(interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if c.path == "" {
+				continue
+			}
+			stat, err := os.Stat(c.path)
+			if err != nil {
+				continue
+			}
+			if stat.ModTime().After(c.lastMod) {
+				c.lastMod = stat.ModTime()
+				if newCfg, err := Load(c.path); err == nil {
+					c.mu.Lock()
+					// Copy fields individually to avoid copying sync.RWMutex.
+					c.Swarm = newCfg.Swarm
+					c.Engine = newCfg.Engine
+					c.Brain = newCfg.Brain
+					c.Weapons = newCfg.Weapons
+					c.Whitelist = newCfg.Whitelist
+					c.parsedCIDRs = newCfg.parsedCIDRs
+					c.LogDir = newCfg.LogDir
+					watchers := c.watchers
+					c.mu.Unlock()
+					for _, w := range watchers {
+						w(newCfg)
+					}
+				}
+			}
+		}
+	}()
+}
+
+// targetHostnameRE matches basic hostnames for ValidateTarget.
+var targetHostnameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$`)
+
+// ValidateTarget validates a user-controlled target string before passing it
+// to external binaries. Accepts valid IP addresses and basic hostnames.
+// Rejects strings that start with "-" (flag injection), contain shell
+// metacharacters, or fail IP/hostname parsing.
+func ValidateTarget(target string) error {
+	if target == "" {
+		return fmt.Errorf("config: target must not be empty")
+	}
+
+	// Reject targets starting with "-" (flag injection).
+	if strings.HasPrefix(target, "-") {
+		return fmt.Errorf("config: target %q must not start with '-'", target)
+	}
+
+	// Reject targets containing shell metacharacters.
+	if strings.ContainsAny(target, ";|&`$(){}<>\n\r") {
+		return fmt.Errorf("config: target %q contains forbidden characters", target)
+	}
+
+	// Accept valid IP addresses.
+	if net.ParseIP(target) != nil {
+		return nil
+	}
+
+	// Accept basic hostnames.
+	if targetHostnameRE.MatchString(target) {
+		return nil
+	}
+
+	return fmt.Errorf("config: target %q is not a valid IP or hostname", target)
+}
+
 // Validate checks the configuration for validity and returns all errors
 // accumulated into a single error.
 func (c *Config) Validate() error {
 	var errs []string
 
+	// Swarm.Bind must be valid host:port.
+	if _, _, err := net.SplitHostPort(c.Swarm.Bind); err != nil {
+		errs = append(errs, fmt.Sprintf("swarm.bind %q: %v", c.Swarm.Bind, err))
+	}
+
+	// Engine thresholds: must be > 0 and < 1000000.
 	if c.Engine.SynFloodPPS <= 0 || c.Engine.SynFloodPPS >= 1000000 {
 		errs = append(errs, fmt.Sprintf("engine.syn_flood_pps must be > 0 and < 1000000, got %d", c.Engine.SynFloodPPS))
 	}
@@ -152,6 +251,27 @@ func (c *Config) Validate() error {
 	}
 	if c.Engine.MaxPPS <= 0 {
 		errs = append(errs, fmt.Sprintf("engine.max_pps must be > 0, got %d", c.Engine.MaxPPS))
+	}
+
+	// Brain.CounterstrikeThreshold: 0-100 (0 = disabled).
+	if c.Brain.CounterstrikeThreshold < 0 || c.Brain.CounterstrikeThreshold > 100 {
+		errs = append(errs, fmt.Sprintf("brain.counterstrike_threshold must be 0-100, got %.1f", c.Brain.CounterstrikeThreshold))
+	}
+
+	// Brain.BanDuration must be >= 0.
+	if c.Brain.BanDuration < 0 {
+		errs = append(errs, fmt.Sprintf("brain.ban_duration must be >= 0, got %d", c.Brain.BanDuration))
+	}
+
+	// Weapons: if set, path must not be empty (no existence check — may be in PATH).
+	if c.Weapons.NmapBin == "" {
+		errs = append(errs, "weapons.nmap_bin must not be empty")
+	}
+	if c.Weapons.NucleiBin == "" {
+		errs = append(errs, "weapons.nuclei_bin must not be empty")
+	}
+	if c.Weapons.HydraBin == "" {
+		errs = append(errs, "weapons.hydra_bin must not be empty")
 	}
 
 	if len(errs) > 0 {
@@ -166,17 +286,17 @@ func (c *Config) IsWhitelisted(ip string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// Exact string match.
+	// Exact string match (handles both bare IPs, IPv6 literals, and CIDR strings).
 	for _, w := range c.Whitelist {
 		if w == ip {
 			return true
 		}
 	}
 
-	// CIDR subnet match.
+	// CIDR subnet match against pre-parsed network ranges.
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
-		return false
+		return false // not a valid IP and no exact match — can't match CIDR
 	}
 	for _, cidr := range c.parsedCIDRs {
 		if cidr.Contains(parsed) {
@@ -187,23 +307,12 @@ func (c *Config) IsWhitelisted(ip string) bool {
 	return false
 }
 
-// ValidateTarget performs basic validation of a scan target.
-// Accepts IP addresses, hostnames, and URLs.
-func ValidateTarget(target string) error {
-	if target == "" {
-		return fmt.Errorf("target must not be empty")
-	}
-	// Reject flag-like inputs (command injection via tool flags)
-	if strings.HasPrefix(target, "-") {
-		return fmt.Errorf("target must not start with flag prefix")
-	}
-	// Try parsing as IP
-	if net.ParseIP(target) != nil {
-		return nil
-	}
-	// Basic sanity: reject obviously dangerous strings
-	if strings.ContainsAny(target, ";&|`$(){}[]<>\n\r\t ") {
-		return fmt.Errorf("target contains invalid characters")
-	}
-	return nil
+// SetWhitelist replaces the whitelist and re-parses CIDR entries.
+// This is the correct way to change the whitelist at runtime because
+// it keeps parsedCIDRs in sync with the string entries.
+func (c *Config) SetWhitelist(entries []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Whitelist = entries
+	c.parsedCIDRs = parseCIDRList(entries)
 }

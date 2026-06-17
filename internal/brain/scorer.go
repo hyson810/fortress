@@ -1,173 +1,265 @@
 package brain
 
 import (
+	"math"
 	"sync"
 	"time"
-
-	"github.com/fortress/v6/internal/engine"
 )
 
-// DetectorWeights holds the per-detector score multipliers.
-// Each weight is applied to a raw score of 100 per alert.
-type DetectorWeights struct {
-	PacketFlood, PacketScan, FlowScan, BehaviorEntropy, DNSTunnel,
-	HTTPAttack, BruteForce, AnomalyL1, AnomalyL2, JA3Malicious,
-	OSAnomaly, HoneypotHit, ARPSpoof float64
-}
+// ThreatLevel represents the severity of a detected threat
+type ThreatLevel int
 
-// DefaultWeights returns a conservative weight configuration suitable for
-// most production deployments.
-func DefaultWeights() DetectorWeights {
-	return DetectorWeights{
-		PacketFlood: 0.10, PacketScan: 0.10, FlowScan: 0.10,
-		BehaviorEntropy: 0.08, DNSTunnel: 0.07, HTTPAttack: 0.10,
-		BruteForce: 0.08, AnomalyL1: 0.07, AnomalyL2: 0.07,
-		JA3Malicious: 0.05, OSAnomaly: 0.03, HoneypotHit: 0.30, ARPSpoof: 0.08,
+const (
+	LevelNone     ThreatLevel = 0
+	LevelLow      ThreatLevel = 25
+	LevelMedium   ThreatLevel = 50
+	LevelHigh     ThreatLevel = 75
+	LevelCritical ThreatLevel = 100
+)
+
+func (l ThreatLevel) String() string {
+	switch {
+	case l >= LevelCritical: return "CRITICAL"
+	case l >= LevelHigh:     return "HIGH"
+	case l >= LevelMedium:   return "MEDIUM"
+	case l >= LevelLow:      return "LOW"
+	default:                 return "NONE"
 	}
 }
 
-// AggressiveWeights returns elevated weights that trigger responses earlier.
-func AggressiveWeights() DetectorWeights {
-	w := DefaultWeights()
-	w.PacketFlood = 0.15
-	w.HTTPAttack = 0.15
-	w.HoneypotHit = 0.35
-	w.BruteForce = 0.12
-	return w
+// DetectionWeights mirrors the Python scorer.py DETECTOR_WEIGHTS
+type DetectionWeights struct {
+	ScanDetect     float64
+	FloodDetect    float64
+	AnomalyDetect  float64
+	DNSDetect      float64
+	BruteForce     float64
+	ARPDetect      float64
+	HoneypotTrip   float64
+	IntelMatch     float64
+	FingerprintHit float64
 }
 
-// ResponseLevel encodes the four-tier defensive posture.
-type ResponseLevel int
+// DefaultWeights returns the default detector weight configuration.
+func DefaultWeights() DetectionWeights {
+	return DetectionWeights{
+		ScanDetect:     2.5,
+		FloodDetect:    3.0,
+		AnomalyDetect:  2.0,
+		DNSDetect:      1.5,
+		BruteForce:     3.5,
+		ARPDetect:      4.0,
+		HoneypotTrip:   5.0,
+		IntelMatch:     2.0,
+		FingerprintHit: 1.0,
+	}
+}
 
-const (
-	ResponseA ResponseLevel = iota // 0–25: Silent observation, log only
-	ResponseB                       // 25–50: Active recon — WHOIS, rate limit, abuse draft
-	ResponseC                       // 50–75: Predator — tarpit, honeypot, ban, OSINT, attack scan
-	ResponseD                       // 75–100: Black hole — LLM deception, full weapon chain, swarm
-)
-
-// IPRecord accumulates threat signals for a single IP address.
+// IPRecord tracks per-IP threat state
 type IPRecord struct {
 	IP              string
 	FirstSeen       time.Time
 	LastSeen        time.Time
-	TotalScore      float64
+	OpenPorts       int
 	ScanScore       float64
 	FloodScore      float64
 	AnomalyScore    float64
 	HoneypotScore   float64
 	IntelScore      float64
-	ThreatCount     int
-	HoneypotTripped bool
-	Banned          bool
+	TotalScore      float64
+	Level           ThreatLevel
 	ResponseLevel   ResponseLevel
+	Banned          bool
+	BanExpires      time.Time
+	HoneypotTripped bool
+	IntelMatches    []string
+	EvidencePath    string
 }
 
-// Scorer is the central threat scoring engine.
-//
-// It consumes threats from all seven detection engines, applies
-// per-detector weights, and maps cumulative scores onto a four-tier
-// response ladder (A/B/C/D).  It also tracks honeypot trips and
-// external intelligence matches.
+// Scorer is the central threat scoring engine
 type Scorer struct {
-	mu          sync.RWMutex
-	records     map[string]*IPRecord
-	weights     DetectorWeights
-	banDuration time.Duration
-	maxRecords  int
+	mu       sync.RWMutex
+	records  map[string]*IPRecord
+	weights  DetectionWeights
+	banTime  time.Duration
+	maxSize  int
 }
 
-// NewScorer creates a new Scorer with the given weights, ban duration
-// (in seconds), and maximum record capacity.
-func NewScorer(weights DetectorWeights, banDurationSec, maxRecords int) *Scorer {
+// NewScorer creates a threat scorer with the given weights
+func NewScorer(weights DetectionWeights, banDuration time.Duration, maxRecords int) *Scorer {
 	return &Scorer{
-		records:     make(map[string]*IPRecord),
-		weights:     weights,
-		banDuration: time.Duration(banDurationSec) * time.Second,
-		maxRecords:  maxRecords,
+		records: make(map[string]*IPRecord),
+		weights: weights,
+		banTime: banDuration,
+		maxSize: maxRecords,
 	}
 }
 
-func (s *Scorer) getOrCreate(ip string) *IPRecord {
-	r, ok := s.records[ip]
-	if !ok {
-		if len(s.records) >= s.maxRecords {
-			s.evictOldest()
-		}
-		r = &IPRecord{IP: ip, FirstSeen: time.Now()}
-		s.records[ip] = r
+// GetOrCreate returns existing record or creates new one
+func (s *Scorer) GetOrCreate(ip string) *IPRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if r, ok := s.records[ip]; ok {
+		r.LastSeen = time.Now()
+		return r
 	}
-	r.LastSeen = time.Now()
+
+	// Evict oldest if at capacity
+	if len(s.records) >= s.maxSize {
+		var oldest string
+		var oldestTime time.Time
+		for k, v := range s.records {
+			if oldest == "" || v.LastSeen.Before(oldestTime) {
+				oldest = k
+				oldestTime = v.LastSeen
+			}
+		}
+		delete(s.records, oldest)
+	}
+
+	r := &IPRecord{
+		IP:        ip,
+		FirstSeen: time.Now(),
+		LastSeen:  time.Now(),
+	}
+	s.records[ip] = r
 	return r
 }
 
-func (s *Scorer) evictOldest() {
-	var oldest string
-	var oldestT time.Time
-	for ip, r := range s.records {
-		if oldest == "" || r.LastSeen.Before(oldestT) {
-			oldest = ip
-			oldestT = r.LastSeen
-		}
-	}
-	if oldest != "" {
-		delete(s.records, oldest)
-	}
-}
-
-// AddThreat processes a single engine.Threat, incrementing the
-// corresponding score bucket for the source IP.
-func (s *Scorer) AddThreat(threat engine.Threat) {
+// AddScanScore increments scan detection score
+func (s *Scorer) AddScanScore(ip string, ports int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r := s.getOrCreate(threat.IP)
-	r.ThreatCount++
-	switch threat.Type {
-	case "SYN洪水", "UDP洪水", "ICMP洪水":
-		r.FloodScore += s.weights.PacketFlood * 100
-	case "SYN扫描", "FIN扫描", "Xmas扫描", "NULL扫描", "快速扫描", "中速扫描", "慢速扫描":
-		r.ScanScore += s.weights.PacketScan * 100
-	case "流量异常":
-		r.AnomalyScore += s.weights.BehaviorEntropy * 100
-	case "DNS隧道":
-		r.AnomalyScore += s.weights.DNSTunnel * 100
-	case "SQL注入攻击", "XSS攻击", "路径遍历攻击":
-		r.AnomalyScore += s.weights.HTTPAttack * 100
-	case "SSH爆破", "HTTP爆破":
-		r.AnomalyScore += s.weights.BruteForce * 100
-	case "混合异常":
-		r.AnomalyScore += s.weights.AnomalyL1 * 100
-	case "ARP应答":
-		r.AnomalyScore += s.weights.ARPSpoof * 100
+
+	r := s.records[ip]
+	if r == nil {
+		return
 	}
+	r.OpenPorts = ports
+	// Score scales with port count using log to avoid linear runaway
+	r.ScanScore = math.Log2(float64(ports+1)) * s.weights.ScanDetect
 	s.recalc(r)
 }
 
-// AddHoneypotTrip records that an IP interacted with a honeypot,
-// applying the (typically high) honeypot weight.
+// AddFloodScore increments flood detection score
+func (s *Scorer) AddFloodScore(ip string, pps float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r := s.records[ip]
+	if r == nil {
+		return
+	}
+	// Exponential scaling for high PPS
+	r.FloodScore = math.Pow(pps/100, 1.5) * s.weights.FloodDetect
+	s.recalc(r)
+}
+
+// AddAnomalyScore adds anomaly detection contribution
+func (s *Scorer) AddAnomalyScore(ip string, zScore float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r := s.records[ip]
+	if r == nil {
+		return
+	}
+	r.AnomalyScore = math.Max(0, zScore-2.0) * s.weights.AnomalyDetect
+	s.recalc(r)
+}
+
+// AddHoneypotTrip fires when an attacker interacts with a honeypot
 func (s *Scorer) AddHoneypotTrip(ip string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r := s.getOrCreate(ip)
-	r.HoneypotScore += s.weights.HoneypotHit * 100
+
+	r := s.records[ip]
+	if r == nil {
+		return
+	}
 	r.HoneypotTripped = true
+	r.HoneypotScore += s.weights.HoneypotTrip
 	s.recalc(r)
 }
 
-// AddIntelMatch records an external intelligence hit for an IP.
-func (s *Scorer) AddIntelMatch(ip string) {
+// AddIntelMatch records an OSINT threat intel match
+func (s *Scorer) AddIntelMatch(ip string, source string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r := s.getOrCreate(ip)
-	r.IntelScore += 10
+
+	r := s.records[ip]
+	if r == nil {
+		return
+	}
+	r.IntelMatches = append(r.IntelMatches, source)
+	r.IntelScore += s.weights.IntelMatch
 	s.recalc(r)
 }
 
+// recalc recalculates total score and threat level (caller holds lock)
 func (s *Scorer) recalc(r *IPRecord) {
 	r.TotalScore = r.ScanScore + r.FloodScore + r.AnomalyScore + r.HoneypotScore + r.IntelScore
+
+	switch {
+	case r.TotalScore >= 85:
+		r.Level = LevelCritical
+	case r.TotalScore >= 60:
+		r.Level = LevelHigh
+	case r.TotalScore >= 35:
+		r.Level = LevelMedium
+	case r.TotalScore >= 10:
+		r.Level = LevelLow
+	default:
+		r.Level = LevelNone
+	}
 }
 
-// GetScore returns the current cumulative score and response level for an IP.
+// ShouldCounterstrike returns true if autonomous counterstrike is warranted
+func (s *Scorer) ShouldCounterstrike(ip string, threshold float64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	r, ok := s.records[ip]
+	if !ok {
+		return false
+	}
+	return r.TotalScore >= threshold
+}
+
+// GetTop prints the top-N most threatening IPs
+func (s *Scorer) Top(n int) []*IPRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type scored struct {
+		ip    string
+		score float64
+	}
+	var sorted []scored
+	for ip, r := range s.records {
+		sorted = append(sorted, scored{ip, r.TotalScore})
+	}
+
+	// Simple bubble sort (small N, fine for real-time)
+	for i := 0; i < len(sorted); i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if sorted[j].score > sorted[i].score {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+
+	result := make([]*IPRecord, 0, n)
+	for i := 0; i < len(sorted) && i < n; i++ {
+		if r, ok := s.records[sorted[i].ip]; ok {
+			result = append(result, r)
+		}
+	}
+	return result
+}
+
+// GetScore returns the total score and response level for an IP.
 func (s *Scorer) GetScore(ip string) (float64, ResponseLevel) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -176,36 +268,4 @@ func (s *Scorer) GetScore(ip string) (float64, ResponseLevel) {
 		return 0, ResponseA
 	}
 	return r.TotalScore, r.ResponseLevel
-}
-
-// ShouldCounterstrike returns true when the IP score meets or exceeds
-// the given threshold.
-func (s *Scorer) ShouldCounterstrike(ip string, threshold float64) bool {
-	score, _ := s.GetScore(ip)
-	return score >= threshold
-}
-
-// RecordCount returns the number of IP records currently tracked.
-func (s *Scorer) RecordCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.records)
-}
-
-// CleanupStale decays every record and removes those whose decayed
-// score falls below the floor after maxAge since last seen.
-func (s *Scorer) CleanupStale(floor float64, maxAge time.Duration) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	removed := 0
-	for ip, r := range s.records {
-		if time.Since(r.LastSeen) > maxAge {
-			decayed := DecayScore(r.TotalScore, r.LastSeen, defaultHalfLife)
-			if decayed < floor {
-				delete(s.records, ip)
-				removed++
-			}
-		}
-	}
-	return removed
 }
