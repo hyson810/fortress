@@ -1,0 +1,40 @@
+engine:
+  xdp_mode: generic
+  max_pps: 1000000
+  syn_flood_pps: 80
+  udp_flood_pps: 200
+  icmp_flood_pps: 50
+  run_uid: 65534
+  run_gid: 65534
+
+brain:
+  rules_dir: /etc/fortress/rules.d
+  auto_counterstrike: false
+  counterstrike_threshold: 75
+  ban_duration: 1800
+  aggressive_mode: false
+
+swarm:
+  name: hive-01
+  bind: 0.0.0.0:9700
+  peers: []
+  gossip_key: ""
+
+weapons:
+  nmap_bin: /usr/bin/nmap
+  nuclei_bin: /usr/local/bin/nuclei
+  hydra_bin: /usr/bin/hydra
+  sqlmap_bin: /usr/bin/sqlmap
+  msf_bin: /usr/bin/msfconsole
+  wordlists: /usr/share/wordlists
+  max_concurrent: 50
+
+whitelist:
+  - 127.0.0.1
+  - ::1
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+
+log_dir: /var/log/fortress
+data_dir: /var/lib/fortress
