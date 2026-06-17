@@ -1,0 +1,9 @@
+[package]
+name = "fortress-ebpfmgmt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aya = "0.13"
+anyhow = "1"
+log = "0.4"
