@@ -66,7 +66,17 @@ func runDefense(cfg *config.Config) {
 
 	log.Println("[defense] all engines initialized")
 	log.Printf("[defense] response mode: %s", map[bool]string{false: "normal", true: "aggressive"}[cfg.Brain.AggressiveMode])
-	log.Println("[defense] awaiting packets (simulation loop active; real AF_XDP feed from Rust in Plan B)")
+
+	// Try Rust FFI muscle layer
+	ffiActive := false
+	if err := engine.InitFFI("eth0"); err != nil {
+		log.Printf("[defense] Rust muscle not available: %v — using simulation mode", err)
+	} else {
+		log.Println("[defense] Rust muscle engine loaded — AF_XDP active")
+		ffiActive = true
+		defer engine.CloseFFI()
+	}
+	log.Println("[defense] awaiting packets...")
 
 	// Signals
 	sigCh := make(chan os.Signal, 1)
@@ -92,6 +102,48 @@ func runDefense(cfg *config.Config) {
 			return
 
 		case <-simTicker.C:
+			// Try Rust FFI muscle first
+			if ffiActive {
+				if pkt, ok := engine.ReadFFI(); ok {
+					packetCount++
+					// L1: packet inspection
+					for _, th := range pi.Feed(pkt.TCPFlags, pkt.SrcIP, pkt.DstPort, pkt.Protocol) {
+						scorer.AddThreat(th)
+						corr.Feed(th.IP, th.Type)
+					}
+					// L2: flow analysis
+					for _, th := range fa.Feed(pkt.SrcIP, pkt.DstPort) {
+						scorer.AddThreat(th)
+						corr.Feed(th.IP, th.Type)
+					}
+					// L3: behavior
+					ba.Feed(pkt.SrcIP, pkt.DstPort)
+					// L4: DNS (periodic)
+					if packetCount%10 == 0 {
+						for _, th := range dd.Feed(pkt.SrcIP, "api.example.com") {
+							scorer.AddThreat(th)
+						}
+					}
+					// L5: brute force
+					bf.FeedSSH(pkt.SrcIP)
+					// L6: hybrid anomaly
+					ha.Feed(pkt)
+					// L7: fingerprint
+					fe.FeedSYN(pkt.SrcIP, int(pkt.PayloadSize), 65535, true)
+					continue
+				}
+				// No FFI packet available, inject a test packet
+				engine.InjectFFI(
+					fmt.Sprintf("192.168.1.%d", packetCount%254+1),
+					"10.0.0.1",
+					uint16(12345+packetCount%1000),
+					80,
+					"TCP",
+					"S",
+					64,
+				)
+			}
+
 			packetCount++
 			srcIP := fmt.Sprintf("192.168.1.%d", packetCount%254+1)
 			dstPort := uint16(80 + packetCount%100)
