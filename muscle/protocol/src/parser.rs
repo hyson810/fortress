@@ -37,7 +37,7 @@ impl std::error::Error for ParseError {}
 // ── IPv4 ────────────────────────────────────────────────────────
 
 /// Parsed IPv4 header fields.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Ipv4Header {
     pub src_ip: [u8; 4],
     pub dst_ip: [u8; 4],
@@ -48,7 +48,7 @@ pub struct Ipv4Header {
 }
 
 /// Parsed TCP header fields.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TcpHeader {
     pub src_port: u16,
     pub dst_port: u16,
@@ -60,7 +60,7 @@ pub struct TcpHeader {
 // ── IPv6 ────────────────────────────────────────────────────────
 
 /// Parsed IPv6 header fields — fixed 40-byte header only.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Ipv6Header {
     pub src_ip: [u8; 16],
     pub dst_ip: [u8; 16],
@@ -73,7 +73,7 @@ pub struct Ipv6Header {
 // ── UDP ─────────────────────────────────────────────────────────
 
 /// Parsed UDP header fields.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UdpHeader {
     pub src_port: u16,
     pub dst_port: u16,
@@ -84,7 +84,7 @@ pub struct UdpHeader {
 // ── ICMP ────────────────────────────────────────────────────────
 
 /// Parsed ICMP header fields (first 4 bytes common to all ICMP types).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IcmpHeader {
     pub icmp_type: u8,
     pub icmp_code: u8,
@@ -94,7 +94,7 @@ pub struct IcmpHeader {
 // ── Packet classification ───────────────────────────────────────
 
 /// High-level packet classification for the muscle fast path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PacketClass {
     TcpIpv4 {
         src: [u8; 4],
@@ -855,7 +855,7 @@ mod tests {
         assert_eq!(tcp_flags_string(0x10), "A");
         assert_eq!(tcp_flags_string(0x20), "U");
         assert_eq!(tcp_flags_string(0x0A), "SP"); // SYN+PSH
-        assert_eq!(tcp_flags_string(0x29), "FPAU"); // FIN+PSH+ACK+URG
+        assert_eq!(tcp_flags_string(0x39), "FPAU"); // FIN+PSH+ACK+URG
     }
 
     #[test]
@@ -887,8 +887,9 @@ mod tests {
         data[0] = 0x60; // version=6
         data[4] = 0x00; data[5] = 0x08; // payload_length=8
         data[6] = 17;   // next_header=UDP
-        data[34] = 0x00; data[35] = 0x35; // src_port=53
-        data[36] = 0x08; data[37] = 0xAE; // dst_port=2222
+        // UDP header at offset 40
+        data[40] = 0x00; data[41] = 0x35; // src_port=53
+        data[42] = 0x08; data[43] = 0xAE; // dst_port=2222
 
         match classify_ip(&data) {
             Ok((PacketClass::UdpIpv6 { sport, dport, .. }, _)) => {
