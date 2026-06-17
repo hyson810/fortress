@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Engine     EngineConfig `yaml:"engine"`
 	Brain      BrainConfig  `yaml:"brain"`
+	Weapons    WeaponsConfig `yaml:"weapons"`
 	Whitelist  []string     `yaml:"whitelist"`
 	LogDir     string       `yaml:"log_dir"`
 	mu         sync.RWMutex
@@ -35,6 +36,18 @@ type BrainConfig struct {
 	BanDuration    int  `yaml:"ban_duration"` // seconds
 }
 
+// WeaponsConfig holds external tool paths and wordlist locations
+// for Kali Fusion weapon orchestration.
+type WeaponsConfig struct {
+	NmapBin       string `yaml:"nmap_bin"`
+	NucleiBin     string `yaml:"nuclei_bin"`
+	HydraBin      string `yaml:"hydra_bin"`
+	SqlmapBin     string `yaml:"sqlmap_bin"`
+	MsfBin        string `yaml:"msf_bin"`
+	Wordlists     string `yaml:"wordlists"`
+	MaxConcurrent int    `yaml:"max_concurrent"`
+}
+
 // Default returns a working default configuration.
 func Default() *Config {
 	defaultWhitelist := []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
@@ -48,6 +61,15 @@ func Default() *Config {
 		Brain: BrainConfig{
 			AggressiveMode: false,
 			BanDuration:    1800,
+		},
+		Weapons: WeaponsConfig{
+			NmapBin:       "/usr/bin/nmap",
+			NucleiBin:     "/usr/local/bin/nuclei",
+			HydraBin:      "/usr/bin/hydra",
+			SqlmapBin:     "/usr/bin/sqlmap",
+			MsfBin:        "/usr/bin/msfconsole",
+			Wordlists:     "/usr/share/wordlists",
+			MaxConcurrent: 50,
 		},
 		Whitelist:   defaultWhitelist,
 		LogDir:      "logs",
@@ -155,6 +177,10 @@ func (c *Config) IsWhitelisted(ip string) bool {
 func ValidateTarget(target string) error {
 	if target == "" {
 		return fmt.Errorf("target must not be empty")
+	}
+	// Reject flag-like inputs (command injection via tool flags)
+	if strings.HasPrefix(target, "-") {
+		return fmt.Errorf("target must not start with flag prefix")
 	}
 	// Try parsing as IP
 	if net.ParseIP(target) != nil {
