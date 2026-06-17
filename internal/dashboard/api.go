@@ -118,8 +118,3 @@ func (d *Dashboard) handleEvidence(w http.ResponseWriter, r *http.Request) {
 func (d *Dashboard) handleConfig(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, d.config)
 }
-
-// handleWebSocket will be implemented in Task 5.
-func (d *Dashboard) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
-}

@@ -31,28 +31,6 @@ type BrainProvider interface {
 	GetMetrics() map[string]interface{}
 }
 
-// Hub manages WebSocket/SSE client connections.
-type Hub struct {
-	stopCh chan struct{}
-}
-
-// NewHub creates a new Hub.
-func NewHub() *Hub {
-	return &Hub{
-		stopCh: make(chan struct{}),
-	}
-}
-
-// Stop signals the Hub to shut down.
-func (h *Hub) Stop() {
-	select {
-	case <-h.stopCh:
-		// already closed
-	default:
-		close(h.stopCh)
-	}
-}
-
 // New creates a new Dashboard server.
 func New(cfg Config, brain BrainProvider) *Dashboard {
 	mux := http.NewServeMux()
@@ -119,11 +97,6 @@ func (d *Dashboard) Started() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.started
-}
-
-// pushLoop will be implemented in a later task.
-func (d *Dashboard) pushLoop() {
-	// Push loop will be implemented in Task 5
 }
 
 // itoa converts an int to a decimal string (avoids strconv import).

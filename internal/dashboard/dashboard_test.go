@@ -3,6 +3,7 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -125,4 +126,60 @@ func TestAPIStatsJSON(t *testing.T) {
 	if stats.ActiveThreats != 0 {
 		t.Errorf("expected 0 threats, got %d", stats.ActiveThreats)
 	}
+}
+
+func TestHubBroadcast(t *testing.T) {
+	hub := NewHub()
+	ch := hub.Register()
+	defer hub.Unregister(ch)
+
+	hub.Broadcast(WSMessage{Type: "test", Data: "hello"})
+
+	select {
+	case data := <-ch:
+		var msg WSMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+		if msg.Type != "test" {
+			t.Errorf("got type %q, want %q", msg.Type, "test")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for broadcast")
+	}
+}
+
+func TestSSEEndpoint(t *testing.T) {
+	d := New(DefaultConfig(), &mockBrain{})
+	ts := httptest.NewServer(http.HandlerFunc(d.handleWebSocket))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL)
+	if err != nil {
+		t.Fatalf("SSE connect failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("got status %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("got Content-Type %q, want text/event-stream", ct)
+	}
+}
+
+func TestHubStop(t *testing.T) {
+	hub := NewHub()
+	ch := hub.Register()
+
+	hub.Stop()
+
+	// After stop, channel should be closed
+	_, ok := <-ch
+	if ok {
+		t.Error("channel should be closed after hub stop")
+	}
+
+	// Double stop should be safe
+	hub.Stop()
 }
