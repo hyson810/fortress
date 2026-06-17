@@ -13,6 +13,7 @@ import (
 // Config is the top-level Fortress configuration.
 type Config struct {
 	Engine     EngineConfig `yaml:"engine"`
+	Brain      BrainConfig  `yaml:"brain"`
 	Whitelist  []string     `yaml:"whitelist"`
 	LogDir     string       `yaml:"log_dir"`
 	mu         sync.RWMutex
@@ -28,6 +29,12 @@ type EngineConfig struct {
 	MaxPPS       int `yaml:"max_pps"`
 }
 
+// BrainConfig holds the scoring and response configuration.
+type BrainConfig struct {
+	AggressiveMode bool `yaml:"aggressive_mode"`
+	BanDuration    int  `yaml:"ban_duration"` // seconds
+}
+
 // Default returns a working default configuration.
 func Default() *Config {
 	defaultWhitelist := []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
@@ -37,6 +44,10 @@ func Default() *Config {
 			UdpFloodPPS:  200,
 			IcmpFloodPPS: 50,
 			MaxPPS:       1000000,
+		},
+		Brain: BrainConfig{
+			AggressiveMode: false,
+			BanDuration:    1800,
 		},
 		Whitelist:   defaultWhitelist,
 		LogDir:      "logs",
@@ -137,4 +148,21 @@ func (c *Config) IsWhitelisted(ip string) bool {
 	}
 
 	return false
+}
+
+// ValidateTarget performs basic validation of a scan target.
+// Accepts IP addresses, hostnames, and URLs.
+func ValidateTarget(target string) error {
+	if target == "" {
+		return fmt.Errorf("target must not be empty")
+	}
+	// Try parsing as IP
+	if net.ParseIP(target) != nil {
+		return nil
+	}
+	// Basic sanity: reject obviously dangerous strings
+	if strings.ContainsAny(target, ";&|`$(){}[]<>") {
+		return fmt.Errorf("target contains invalid characters")
+	}
+	return nil
 }
