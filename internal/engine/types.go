@@ -1,24 +1,17 @@
 package engine
 
-import "time"
-
-// Threat represents a detected security threat.
+// Threat represents a detected packet-level threat.
 type Threat struct {
-	Type   string
-	IP     string
-	Detail string
+	Type   string // Chinese threat category (e.g. "SYN洪水", "FIN扫描")
+	IP     string // Source IP address
+	Detail string // Human-readable detail (flags, port, MAC, etc.)
 }
 
-// PacketContext holds metadata about a captured network packet.
+// PacketContext holds pre-parsed packet metadata extracted by the
+// XDP/data-plane layer before passing into the Go inspection engine.
 type PacketContext struct {
-	Timestamp   time.Time
-	SrcIP       string
-	DstIP       string
-	SrcPort     uint16
-	DstPort     uint16
-	Protocol    string // "TCP", "UDP", "ICMP"
-	TCPFlags    string // sorted uppercase, e.g. "S", "AS", "FPU"
-	PayloadSize uint16
-	PayloadHash uint64
-	Direction   string // "ingress" or "egress"
+	TCPFlags string // Sorted uppercase TCP flags (e.g. "S", "AS", "FPU")
+	SrcIP    string // Source IP address
+	DstPort  uint16 // Destination port (TCP/UDP only)
+	Protocol string // "TCP", "UDP", or "ICMP"
 }
