@@ -118,7 +118,7 @@ func (pe *PredictiveEngine) loadPatterns() {
 			CVSS:      7.5,
 			Languages: []string{"python", "php", "ruby", "go", "java", "js"},
 			Patterns: []*regexp.Regexp{
-				regexp.MustCompile(`(?i)(os\.Open\(.*\+|open\(.*\+|file_get_contents\(.*\+|readFile\(.*\+|fs\.readFileSync\(.*\+)`),
+				regexp.MustCompile(`(?i)(os\.Open\(.*\+|open\(.*[\+\.]|fopen\(|file_get_contents\(.*[\+\.]|readFile\(.*\+|fs\.readFileSync\(.*\+)`),
 				regexp.MustCompile(`(?i)(\.\./|\.\.\\)`),
 			},
 			Description: "Path traversal via unsanitized file path from user input",
@@ -129,7 +129,7 @@ func (pe *PredictiveEngine) loadPatterns() {
 			CVSS:      9.8,
 			Languages: []string{"python", "ruby", "php", "go", "js", "java"},
 			Patterns: []*regexp.Regexp{
-				regexp.MustCompile(`(?i)(os\.system\(|subprocess\.|exec\(|child_process\.exec\(|Runtime\.exec\(|popen\(|shell_exec\(|passthru\()`),
+				regexp.MustCompile(`(?i)(os\.system\(|\bsystem\(|subprocess\.|exec\(|child_process\.exec\(|Runtime\.exec\(|popen\(|shell_exec\(|passthru\()`),
 				regexp.MustCompile(`(?i)(os\.exec\.Command\(.*\+|exec\.Command\(.*,)`),
 			},
 			Description: "Command injection via unsanitized user input in system calls",
