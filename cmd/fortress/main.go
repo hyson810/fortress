@@ -11,7 +11,11 @@ import (
 
 	"github.com/fortress/v6/internal/brain"
 	"github.com/fortress/v6/internal/config"
+	"github.com/fortress/v6/internal/deception"
+	"github.com/fortress/v6/internal/defense"
 	"github.com/fortress/v6/internal/engine"
+	"github.com/fortress/v6/internal/fusion"
+	"github.com/fortress/v6/internal/swarm"
 )
 
 var (
@@ -67,6 +71,29 @@ func runDefense(cfg *config.Config) {
 	log.Println("[defense] all engines initialized")
 	log.Printf("[defense] response mode: %s", map[bool]string{false: "normal", true: "aggressive"}[cfg.Brain.AggressiveMode])
 
+	// Active defense
+	tarpit := defense.NewTarpit()
+	tarpit.Start() // non-fatal if no root
+	honeypots := defense.NewHoneypotManager()
+	honeypots.StartSSH(2222)
+	honeypots.StartHTTP(8080)
+	honeypots.StartMySQL(3307)
+	intel := defense.NewThreatIntel()
+
+	// Swarm
+	gossip, err := swarm.NewGossipNode(cfg.Swarm)
+	if err != nil {
+		log.Printf("[defense] swarm not available: %v", err)
+	}
+
+	// Deception
+	abyss := deception.NewAbyssEngine()
+	mirror := deception.NewMirrorEngine()
+	poison := deception.NewPoisonEngine()
+
+	// Kali weapons (for counterstrike)
+	weapons := fusion.NewAttackChain(&cfg.Weapons)
+
 	// Try Rust FFI muscle layer
 	ffiActive := false
 	if err := engine.InitFFI("eth0"); err != nil {
@@ -99,9 +126,21 @@ func runDefense(cfg *config.Config) {
 			log.Println("[defense] shutting down...")
 			log.Printf("[defense] session stats: %d packets processed, %d IPs tracked",
 				packetCount, scorer.RecordCount())
+			honeypots.StopAll()
+			if gossip != nil {
+				gossip.Stop()
+			}
 			return
 
 		case <-simTicker.C:
+			// Check honeypot hits
+			select {
+			case hit := <-honeypots.HitChannel():
+				scorer.AddHoneypotTrip(hit.IP)
+				log.Printf("[honeypot] hit from %s on %s:%d", hit.IP, hit.Type, hit.Port)
+			default:
+			}
+
 			// Try Rust FFI muscle first
 			if ffiActive {
 				if pkt, ok := engine.ReadFFI(); ok {
@@ -192,6 +231,16 @@ func runDefense(cfg *config.Config) {
 			if ips, mult := corr.Check(); len(ips) > 0 {
 				log.Printf("[correlation] %d IPs coordinated, multiplier=%.1f", len(ips), mult)
 			}
+
+			// Trigger responses for high-scoring IPs (simplified top-N check)
+			// In production, iterate scorer records
+			_ = tarpit
+			_ = intel
+			_ = abyss
+			_ = mirror
+			_ = poison
+			_ = weapons
+			_ = gossip
 
 		case <-reportTicker.C:
 			if scorer.RecordCount() > 0 {

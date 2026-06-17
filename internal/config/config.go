@@ -20,11 +20,12 @@ type SwarmConfig struct {
 
 // Config is the top-level Fortress configuration.
 type Config struct {
-	Engine     EngineConfig `yaml:"engine"`
-	Brain      BrainConfig  `yaml:"brain"`
+	Engine     EngineConfig  `yaml:"engine"`
+	Brain      BrainConfig   `yaml:"brain"`
 	Weapons    WeaponsConfig `yaml:"weapons"`
-	Whitelist  []string     `yaml:"whitelist"`
-	LogDir     string       `yaml:"log_dir"`
+	Swarm      SwarmConfig   `yaml:"swarm"`
+	Whitelist  []string      `yaml:"whitelist"`
+	LogDir     string        `yaml:"log_dir"`
 	mu         sync.RWMutex
 	path       string
 	parsedCIDRs []net.IPNet // pre-parsed CIDR whitelist entries
@@ -69,6 +70,12 @@ func Default() *Config {
 		Brain: BrainConfig{
 			AggressiveMode: false,
 			BanDuration:    1800,
+		},
+		Swarm: SwarmConfig{
+			Name:      "hive-01",
+			Bind:      "0.0.0.0:9700",
+			Peers:     []string{},
+			GossipKey: "",
 		},
 		Weapons: WeaponsConfig{
 			NmapBin:       "/usr/bin/nmap",
