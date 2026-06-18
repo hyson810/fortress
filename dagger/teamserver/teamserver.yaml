@@ -1,0 +1,12 @@
+listen:
+  https: "0.0.0.0:443"
+  dns: "0.0.0.0:53"
+  websocket: "0.0.0.0:8443"
+  icmp: false
+operator:
+  cli: ""
+  api: "127.0.0.1:8080"
+tls:
+  cert_file: ""
+  key_file: ""
+key_file: "server.key"
