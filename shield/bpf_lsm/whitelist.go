@@ -154,6 +154,20 @@ func (w *BPFWhitelist) List() []*WhitelistEntry {
 	return r
 }
 
+// StrictMode returns whether the whitelist rejects unknown programs.
+func (w *BPFWhitelist) StrictMode() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.strictMode
+}
+
+// SetStrictMode controls whether unknown programs are rejected.
+func (w *BPFWhitelist) SetStrictMode(s bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.strictMode = s
+}
+
 // Count returns the number of whitelisted entries.
 func (w *BPFWhitelist) Count() int {
 	w.mu.RLock()
