@@ -1,0 +1,414 @@
+# Hydra-Pro C/BPF Security Ruleset
+# 25+ rules covering C and BPF security vulnerabilities
+# Version: 1.0.0
+
+rules:
+  # ============================================================================
+  # BUFFER OVERFLOW
+  # ============================================================================
+
+  - id: c-buffer-overflow-sprintf
+    severity: ERROR
+    message: "sprintf has no bounds checking. Use snprintf with explicit buffer size instead."
+    languages: [c, cpp]
+    pattern: sprintf($BUF, $FMT, ...)
+    metadata:
+      category: security
+      cwe: "CWE-120: Buffer Copy without Checking Size of Input"
+      confidence: HIGH
+
+  - id: c-buffer-overflow-strcpy
+    severity: ERROR
+    message: "strcpy has no bounds checking. Use strncpy with explicit buffer size, or better, strlcpy."
+    languages: [c, cpp]
+    pattern: strcpy($DST, $SRC)
+    metadata:
+      category: security
+      cwe: "CWE-120"
+      confidence: HIGH
+
+  - id: c-buffer-overflow-strcat
+    severity: ERROR
+    message: "strcat has no bounds checking. Use strncat or ensure destination buffer size before concatenation."
+    languages: [c, cpp]
+    pattern: strcat($DST, $SRC)
+    metadata:
+      category: security
+      cwe: "CWE-120"
+      confidence: HIGH
+
+  - id: c-buffer-overflow-gets
+    severity: ERROR
+    message: "gets() is inherently unsafe — it cannot limit input size. It was removed from C11. Use fgets() instead."
+    languages: [c, cpp]
+    pattern: gets($BUF)
+    metadata:
+      category: security
+      cwe: "CWE-242: Use of Inherently Dangerous Function"
+      confidence: HIGH
+
+  - id: c-buffer-overflow-memcpy-no-size-check
+    severity: ERROR
+    message: "memcpy with size variable not checked against destination buffer. Validate size is within buffer bounds."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          memcpy($DST, $SRC, $N)
+      - pattern-not: |
+          if ($N <= sizeof(...)) {
+              memcpy($DST, $SRC, $N)
+          }
+    metadata:
+      category: security
+      cwe: "CWE-120"
+      confidence: HIGH
+
+  - id: c-buffer-overflow-scanf
+    severity: ERROR
+    message: "scanf %s without field width limit is vulnerable to buffer overflow. Use %<N>s with explicit width."
+    languages: [c, cpp]
+    pattern: scanf("%s", $BUF)
+    metadata:
+      category: security
+      cwe: "CWE-120"
+      confidence: HIGH
+
+  - id: c-buffer-overflow-vsprintf
+    severity: ERROR
+    message: "vsprintf has no bounds checking. Use vsnprintf with buffer size."
+    languages: [c, cpp]
+    pattern: vsprintf($BUF, $FMT, $ARGS)
+    metadata:
+      category: security
+      cwe: "CWE-120"
+      confidence: HIGH
+
+  - id: c-buffer-overflow-wcscpy
+    severity: ERROR
+    message: "wcscpy (wide-char strcpy) has no bounds checking. Use wcsncpy or wcslcpy."
+    languages: [c, cpp]
+    pattern: wcscpy($DST, $SRC)
+    metadata:
+      category: security
+      cwe: "CWE-120"
+      confidence: HIGH
+
+  # ============================================================================
+  # MEMORY MANAGEMENT
+  # ============================================================================
+
+  - id: c-memory-malloc-no-null-check
+    severity: ERROR
+    message: "malloc return value not checked for NULL. Always verify allocation succeeded."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          $PTR = malloc($SIZE);
+          ...
+      - pattern-not: |
+          $PTR = malloc($SIZE);
+          if ($PTR == NULL) {
+              ...
+          }
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-476: NULL Pointer Dereference"
+      confidence: HIGH
+
+  - id: c-memory-calloc-no-null-check
+    severity: ERROR
+    message: "calloc return value must be checked for NULL."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          $PTR = calloc($N, $SIZE);
+          ...
+      - pattern-not: |
+          $PTR = calloc($N, $SIZE);
+          if ($PTR == NULL) {
+              ...
+          }
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-476"
+      confidence: HIGH
+
+  - id: c-memory-free-no-null
+    severity: WARNING
+    message: "Free without setting pointer to NULL may lead to use-after-free or double-free. Set pointer to NULL after free()."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          free($PTR);
+      - pattern-not: |
+          free($PTR);
+          $PTR = NULL;
+    metadata:
+      category: security
+      cwe: "CWE-416: Use After Free"
+      confidence: MEDIUM
+
+  - id: c-memory-alloca-variable
+    severity: WARNING
+    message: "alloca with variable size from user input may cause stack overflow. Use malloc for dynamic sizes."
+    languages: [c, cpp]
+    patterns:
+      - pattern: alloca($VAR)
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: '^(?!(sizeof|128|256|512|1024|2048|4096))'
+    metadata:
+      category: security
+      cwe: "CWE-770"
+      confidence: MEDIUM
+
+  - id: c-memory-realloc-no-null-check
+    severity: ERROR
+    message: "realloc may return NULL on failure, leaking the original block. Assign to a temp pointer first."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          $PTR = realloc($PTR, $SIZE);
+    metadata:
+      category: security
+      cwe: "CWE-401: Missing Release of Memory after Effective Lifetime"
+      confidence: HIGH
+
+  - id: c-memory-realloc-null-check-missing
+    severity: ERROR
+    message: "realloc without NULL check; if it returns NULL, the original pointer is leaked. Always check realloc return."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          $TMP = realloc($PTR, $SIZE);
+          $PTR = $TMP;
+    metadata:
+      category: security
+      cwe: "CWE-401"
+      confidence: HIGH
+
+  # ============================================================================
+  # INTEGER ERRORS
+  # ============================================================================
+
+  - id: c-int-overflow-malloc-wrap
+    severity: ERROR
+    message: "Integer multiplication in malloc size may wrap around, leading to undersized buffer. Validate or use calloc(nmemb, size)."
+    languages: [c, cpp]
+    patterns:
+      - pattern: malloc($N * $SIZE)
+      - pattern-not: |
+          if ($N > SIZE_MAX / $SIZE) { ... }
+          malloc($N * $SIZE)
+    metadata:
+      category: security
+      cwe: "CWE-190: Integer Overflow or Wraparound"
+      confidence: HIGH
+
+  - id: c-int-signed-to-unsigned
+    severity: WARNING
+    message: "Signed integer passed where unsigned expected (size parameter). Negative values may be misinterpreted as large values."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          void *$PTR = malloc($SIGNED_INT);
+      - metavariable-regex:
+          metavariable: $SIGNED_INT
+          regex: '^int\s'
+    metadata:
+      category: security
+      cwe: "CWE-195: Signed to Unsigned Conversion Error"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # COMMAND INJECTION
+  # ============================================================================
+
+  - id: c-injection-system-variable
+    severity: ERROR
+    message: "system() with variable input allows command injection. Validate input or avoid system() entirely."
+    languages: [c, cpp]
+    patterns:
+      - pattern: system($VAR)
+      - pattern-not: system("...")
+    metadata:
+      category: security
+      cwe: "CWE-78: OS Command Injection"
+      confidence: HIGH
+
+  - id: c-injection-popen-variable
+    severity: ERROR
+    message: "popen with variable input allows command injection. Validate and restrict input."
+    languages: [c, cpp]
+    patterns:
+      - pattern: popen($VAR, ...)
+      - pattern-not: popen("...", ...)
+    metadata:
+      category: security
+      cwe: "CWE-78"
+      confidence: HIGH
+
+  # ============================================================================
+  # CONCURRENCY
+  # ============================================================================
+
+  - id: c-concurrency-signal-multithreaded
+    severity: ERROR
+    message: "signal() in multithreaded code has undefined behavior. Use sigaction() instead."
+    languages: [c, cpp]
+    pattern: |
+      signal($SIG, $HANDLER)
+    metadata:
+      category: security
+      cwe: "CWE-479: Signal Handler Use of a Non-reentrant Function"
+      confidence: HIGH
+
+  - id: c-concurrency-race-condition
+    severity: WARNING
+    message: "Non-atomic read-modify-write on shared variable without synchronization. Use atomic operations or mutex."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          $GLOBAL++;
+    metadata:
+      category: security
+      cwe: "CWE-366: Race Condition within a Thread"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # FORMAT STRING
+  # ============================================================================
+
+  - id: c-format-string-user-fmt
+    severity: ERROR
+    message: "printf-family function with variable format string allows format string attacks. Use printf("%s", user_input)."
+    languages: [c, cpp]
+    pattern: printf($VAR)
+    metadata:
+      category: security
+      cwe: "CWE-134: Use of Externally-Controlled Format String"
+      confidence: HIGH
+
+  - id: c-format-string-fprintf-user
+    severity: ERROR
+    message: "fprintf with user-controlled format string. Use fprintf(FILE, \"%s\", user_input)."
+    languages: [c, cpp]
+    pattern: fprintf($F, $VAR)
+    metadata:
+      category: security
+      cwe: "CWE-134"
+      confidence: HIGH
+
+  - id: c-format-string-syslog-user
+    severity: ERROR
+    message: "syslog with user-controlled format string. Use syslog(level, \"%s\", user_input)."
+    languages: [c, cpp]
+    pattern: syslog($LEVEL, $VAR)
+    metadata:
+      category: security
+      cwe: "CWE-134"
+      confidence: HIGH
+
+  # ============================================================================
+  # PATH TRAVERSAL
+  # ============================================================================
+
+  - id: c-path-traversal-realpath-missing
+    severity: ERROR
+    message: "File path used without realpath() resolution is vulnerable to path traversal. Canonicalize and validate."
+    languages: [c, cpp]
+    patterns:
+      - pattern: open($PATH, ...)
+      - pattern-not: |
+          realpath(...)
+          ...
+          open($PATH, ...)
+    metadata:
+      category: security
+      cwe: "CWE-22"
+      confidence: HIGH
+
+  # ============================================================================
+  # BPF-SPECIFIC RULES
+  # ============================================================================
+
+  - id: c-bpf-unbounded-loop
+    severity: ERROR
+    message: "BPF programs must not contain unbounded loops. Use #pragma unroll or bounded loop with verified upper limit."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          for ($I = 0; $I < $VAR; $I++) {
+              ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-834: Excessive Iteration"
+      confidence: HIGH
+      references:
+        - https://www.kernel.org/doc/html/latest/bpf/verifier.html
+
+  - id: c-bpf-uninitialized-stack
+    severity: ERROR
+    message: "BPF stack variables must be initialized before use. The verifier rejects programs reading uninitialized stack."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          __u32 $VAR;
+          ...
+          $PTR->field = $VAR;
+    metadata:
+      category: security
+      cwe: "CWE-456: Missing Initialization"
+      confidence: HIGH
+
+  - id: c-bpf-map-null-check
+    severity: WARNING
+    message: "BPF map lookup return value must be checked for NULL. Always verify map pointer before use."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          $VAL = bpf_map_lookup_elem(&$MAP, &$KEY);
+          ...
+          *$VAL = ...;
+      - pattern-not: |
+          $VAL = bpf_map_lookup_elem(&$MAP, &$KEY);
+          if (!$VAL) {
+              ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-476"
+      confidence: HIGH
+
+  - id: c-bpf-out-of-bounds-access
+    severity: ERROR
+    message: "BPF programs must pass the verifier bounds check. Access only within verified packet/data bounds."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          $DATA + $OFFSET
+      - pattern-not: |
+          if ($DATA + $OFFSET > $DATA_END) {
+              ...
+          }
+          ...
+          $DATA + $OFFSET
+    metadata:
+      category: security
+      cwe: "CWE-125"
+      confidence: HIGH
+
+  - id: c-bpf-helper-return-check
+    severity: WARNING
+    message: "BPF helper function return value not checked. Many helpers indicate errors via return value."
+    languages: [c, cpp]
+    patterns:
+      - pattern: |
+          bpf_$HELPER(...);
+    metadata:
+      category: security
+      cwe: "CWE-252: Unchecked Return Value"
+      confidence: MEDIUM

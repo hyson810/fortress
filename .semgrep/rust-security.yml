@@ -1,0 +1,508 @@
+# Hydra-Pro Rust Security Ruleset
+# 30+ rules covering Rust security vulnerabilities
+# Version: 1.0.0
+
+rules:
+  # ============================================================================
+  # UNSAFE CODE
+  # ============================================================================
+
+  - id: rust-unsafe-no-comment
+    severity: ERROR
+    message: "Unsafe block without a safety comment explaining why the invariants are upheld. Per RFC 2585, every unsafe block must have a SAFETY comment."
+    languages: [rust]
+    patterns:
+      - pattern: |
+          unsafe {
+              ...
+          }
+      - pattern-not: |
+          // SAFETY:
+          ...
+          unsafe {
+              ...
+          }
+      - pattern-not: |
+          /// SAFETY:
+          ...
+          unsafe {
+              ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-242: Use of Inherently Dangerous Function"
+      confidence: HIGH
+      references:
+        - https://doc.rust-lang.org/nomicon/safe-unsafe-meaning.html
+
+  - id: rust-unsafe-fn-no-comment
+    severity: ERROR
+    message: "Unsafe function without documentation explaining the safety contract. Document all preconditions callers must uphold."
+    languages: [rust]
+    patterns:
+      - pattern: |
+          pub unsafe fn $NAME(...) -> $RET {
+              ...
+          }
+      - pattern-not: |
+          ///
+          ...
+          pub unsafe fn $NAME(...) -> $RET {
+              ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-242"
+      confidence: HIGH
+
+  - id: rust-unsafe-transmute
+    severity: ERROR
+    message: "std::mem::transmute bypasses all type safety. RCE risk. Use safe transmutation via bytemuck or zerocopy crates, or pointer casts with careful bounds checking."
+    languages: [rust]
+    patterns:
+      - pattern: std::mem::transmute(...)
+      - pattern: core::mem::transmute(...)
+    metadata:
+      category: security
+      cwe: "CWE-704: Incorrect Type Conversion or Cast"
+      confidence: HIGH
+
+  - id: rust-unsafe-transmute-copy
+    severity: ERROR
+    message: "std::mem::transmute_copy is even more dangerous than transmute — it doesn't even require same size. Use safe alternatives."
+    languages: [rust]
+    patterns:
+      - pattern: std::mem::transmute_copy(...)
+      - pattern: core::mem::transmute_copy(...)
+    metadata:
+      category: security
+      cwe: "CWE-704"
+      confidence: HIGH
+
+  - id: rust-unsafe-maybe-uninit-uninit
+    severity: ERROR
+    message: "MaybeUninit::uninit().assume_init() reads uninitialized memory. Always write before assume_init()."
+    languages: [rust]
+    patterns:
+      - pattern: |
+          MaybeUninit::uninit().assume_init()
+    metadata:
+      category: security
+      cwe: "CWE-456: Missing Initialization of a Variable"
+      confidence: HIGH
+
+  - id: rust-unsafe-ptr-read-no-bounds
+    severity: ERROR
+    message: "ptr::read without bounds verification may read out-of-bounds memory. Validate that the pointer is valid for reads of type T."
+    languages: [rust]
+    patterns:
+      - pattern: std::ptr::read($PTR)
+      - pattern: core::ptr::read($PTR)
+    metadata:
+      category: security
+      cwe: "CWE-125: Out-of-bounds Read"
+      confidence: HIGH
+
+  - id: rust-unsafe-ptr-write-no-bounds
+    severity: ERROR
+    message: "ptr::write without bounds verification may write out-of-bounds. Validate before writing."
+    languages: [rust]
+    patterns:
+      - pattern: std::ptr::write($PTR, ...)
+      - pattern: core::ptr::write($PTR, ...)
+    metadata:
+      category: security
+      cwe: "CWE-787: Out-of-bounds Write"
+      confidence: HIGH
+
+  - id: rust-unsafe-deref-raw
+    severity: WARNING
+    message: "Raw pointer dereference in safe code. All raw pointer derefs must be inside unsafe blocks with safety justification."
+    languages: [rust]
+    patterns:
+      - pattern: |
+          unsafe {
+              ...
+              *$PTR
+              ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-822: Untrusted Pointer Dereference"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # UNWRAP / EXPECT
+  # ============================================================================
+
+  - id: rust-panic-unwrap-production
+    severity: WARNING
+    message: "unwrap() in non-test code may panic. Handle the error explicitly with match, ?, or expect with a descriptive message."
+    languages: [rust]
+    patterns:
+      - pattern: $_.unwrap()
+      - pattern-not-inside: |
+          #[cfg(test)]
+          ...
+      - pattern-not-inside: |
+          #[test]
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-248: Uncaught Exception"
+      confidence: MEDIUM
+
+  - id: rust-panic-expect-no-message
+    severity: WARNING
+    message: "expect() without a descriptive error message makes debugging difficult. Include why this invariant must hold."
+    languages: [rust]
+    patterns:
+      - pattern: $_.expect("")
+    metadata:
+      category: security
+      cwe: "CWE-248"
+      confidence: LOW
+
+  - id: rust-panic-unreachable
+    severity: WARNING
+    message: "unreachable!() in production code should be unreachable_unchecked() inside unsafe only. Use proper error handling."
+    languages: [rust]
+    pattern: unreachable!("...")
+    metadata:
+      category: security
+      cwe: "CWE-248"
+      confidence: MEDIUM
+
+  - id: rust-panic-todo-production
+    severity: ERROR
+    message: "todo!() or unimplemented!() in production code will panic. Implement the functionality or gate behind a feature flag."
+    languages: [rust]
+    patterns:
+      - pattern: todo!(...)
+      - pattern: unimplemented!(...)
+      - pattern-not-inside: |
+          #[cfg(test)]
+          ...
+      - pattern-not-inside: |
+          #[test]
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-248"
+      confidence: HIGH
+
+  # ============================================================================
+  # COMMAND INJECTION
+  # ============================================================================
+
+  - id: rust-injection-command-user-input
+    severity: ERROR
+    message: "std::process::Command with user-controlled arguments without validation may allow command injection. Validate and sanitize all user input."
+    languages: [rust]
+    patterns:
+      - pattern: |
+          std::process::Command::new($CMD).arg($USER_INPUT)
+      - pattern-not: |
+          // SAFETY:
+          ...
+          std::process::Command::new($CMD).arg($USER_INPUT)
+    metadata:
+      category: security
+      cwe: "CWE-78: OS Command Injection"
+      confidence: HIGH
+
+  - id: rust-injection-command-shell
+    severity: ERROR
+    message: "Shell execution with user input enables command injection. Never pass user input to sh -c or cmd /C."
+    languages: [rust]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              std::process::Command::new("sh").arg("-c").arg($INPUT)
+          - pattern: |
+              std::process::Command::new("bash").arg("-c").arg($INPUT)
+          - pattern: |
+              std::process::Command::new("cmd").arg("/C").arg($INPUT)
+          - pattern: |
+              std::process::Command::new("powershell").arg("-Command").arg($INPUT)
+    metadata:
+      category: security
+      cwe: "CWE-78"
+      confidence: HIGH
+
+  # ============================================================================
+  # CRYPTO
+  # ============================================================================
+
+  - id: rust-crypto-weak-rng
+    severity: ERROR
+    message: "Use of non-cryptographic RNG for security-sensitive operations. Use rand::rngs::OsRng or rand::thread_rng() for keys/IVs/tokens."
+    languages: [rust]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              let mut $RNG = rand::rngs::StdRng::seed_from_u64(...);
+          - pattern: |
+              let mut $RNG = rand::rngs::SmallRng::seed_from_u64(...);
+    metadata:
+      category: security
+      cwe: "CWE-338"
+      confidence: HIGH
+
+  - id: rust-crypto-constant-time-compare-missing
+    severity: WARNING
+    message: "Using == for secret comparison is vulnerable to timing attacks. Use constant-time comparison."
+    languages: [rust]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if $A == $TOKEN {
+                  ...
+              }
+          - pattern: |
+              if $HMAC == $HMAC2 {
+                  ...
+              }
+    metadata:
+      category: security
+      cwe: "CWE-208"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # FFI / EXTERNAL
+  # ============================================================================
+
+  - id: rust-ffi-libc-functions
+    severity: WARNING
+    message: "Direct libc:: call bypasses Rust safety guarantees. Prefer std or safe wrapper crates. If unavoidable, wrap in unsafe with safety documentation."
+    languages: [rust]
+    patterns:
+      - pattern: libc::$FUNC(...)
+      - pattern-not-inside: |
+          // SAFETY:
+          ...
+          libc::$FUNC(...)
+    metadata:
+      category: security
+      cwe: "CWE-242"
+      confidence: MEDIUM
+
+  - id: rust-ffi-extern-fn-no-safety-doc
+    severity: WARNING
+    message: "extern function without safety documentation. Document all invariants the caller must uphold."
+    languages: [rust]
+    patterns:
+      - pattern: |
+          extern "C" {
+              fn $NAME(...) -> $RET;
+          }
+    metadata:
+      category: security
+      cwe: "CWE-242"
+      confidence: MEDIUM
+
+  - id: rust-ffi-c-str-unchecked
+    severity: ERROR
+    message: "CStr::from_ptr without verifying the pointer is non-null and points to valid UTF-8. Use CStr::from_ptr with null check."
+    languages: [rust]
+    patterns:
+      - pattern: |
+          CStr::from_ptr($PTR)
+      - pattern-not: |
+          if $PTR.is_null() {
+              ...
+          }
+          ...
+          CStr::from_ptr($PTR)
+    metadata:
+      category: security
+      cwe: "CWE-476: NULL Pointer Dereference"
+      confidence: HIGH
+
+  # ============================================================================
+  # LOGGING HYGIENE
+  # ============================================================================
+
+  - id: rust-logging-println-library
+    severity: WARNING
+    message: "println! in library code bypasses logging frameworks. Use log, tracing, or env_logger for library output."
+    languages: [rust]
+    patterns:
+      - pattern: println!(...)
+      - pattern-not-inside: |
+          fn main() {
+              ...
+          }
+      - pattern-not-inside: |
+          #[cfg(test)]
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-779: Logging of Excessive Data"
+      confidence: LOW
+
+  - id: rust-logging-eprintln-library
+    severity: WARNING
+    message: "eprintln! in library code. Use proper logging with appropriate log levels."
+    languages: [rust]
+    patterns:
+      - pattern: eprintln!(...)
+      - pattern-not-inside: |
+          fn main() {
+              ...
+          }
+      - pattern-not-inside: |
+          #[cfg(test)]
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-779"
+      confidence: LOW
+
+  - id: rust-logging-sensitive-data
+    severity: ERROR
+    message: "Logging potentially sensitive data. Never log keys, passwords, tokens, or PII."
+    languages: [rust]
+    patterns:
+      - pattern: |
+          log::info!(..., $SENSITIVE);
+      - metavariable-regex:
+          metavariable: $SENSITIVE
+          regex: (?i)(password|secret|token|key|cookie|session|credential|private)
+    metadata:
+      category: security
+      cwe: "CWE-532: Insertion of Sensitive Information into Log File"
+      confidence: HIGH
+
+  # ============================================================================
+  # MEMORY SAFETY
+  # ============================================================================
+
+  - id: rust-memory-vec-get-unchecked
+    severity: ERROR
+    message: "get_unchecked() bypasses bounds checking. Only use when access is provably within bounds, and document the proof."
+    languages: [rust]
+    patterns:
+      - pattern: $VEC.get_unchecked($IDX)
+    metadata:
+      category: security
+      cwe: "CWE-129: Improper Validation of Array Index"
+      confidence: HIGH
+
+  - id: rust-memory-slice-get-unchecked
+    severity: ERROR
+    message: "slice::get_unchecked bypasses bounds checking. Document the safety invariant."
+    languages: [rust]
+    patterns:
+      - pattern: $SLICE.get_unchecked($IDX)
+    metadata:
+      category: security
+      cwe: "CWE-129"
+      confidence: HIGH
+
+  - id: rust-memory-ptr-offset
+    severity: ERROR
+    message: "pointer::offset without bounds check may read/write outside allocation. Validate the offset."
+    languages: [rust]
+    patterns:
+      - pattern: $PTR.offset($N)
+      - pattern: $PTR.add($N)
+    metadata:
+      category: security
+      cwe: "CWE-823: Use of Out-of-Range Pointer Offset"
+      confidence: HIGH
+
+  - id: rust-memory-large-alloc-no-limit
+    severity: WARNING
+    message: "Allocation with user-controlled size may exhaust memory. Set a reasonable upper bound."
+    languages: [rust]
+    patterns:
+      - pattern: |
+          vec![0u8; $USER_SIZE]
+    metadata:
+      category: security
+      cwe: "CWE-770: Allocation of Resources Without Limits or Throttling"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # FILE SYSTEM
+  # ============================================================================
+
+  - id: rust-fs-path-no-canonicalize
+    severity: WARNING
+    message: "File path used without canonicalization may be vulnerable to path traversal. Use std::fs::canonicalize and verify the result is within the allowed directory."
+    languages: [rust]
+    patterns:
+      - pattern: std::fs::read_to_string($USER_PATH)
+      - pattern: std::fs::write($USER_PATH, ...)
+      - pattern: std::fs::File::open($USER_PATH)
+    metadata:
+      category: security
+      cwe: "CWE-22: Path Traversal"
+      confidence: HIGH
+
+  - id: rust-fs-permissions-open
+    severity: WARNING
+    message: "Overly permissive file permissions. Use restricted permissions (0o600 for secrets, 0o644 for shared data)."
+    languages: [rust]
+    patterns:
+      - pattern: |
+          OpenOptions::new()
+              ...
+              .mode(0o777)
+              ...
+    metadata:
+      category: security
+      cwe: "CWE-732"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # NETWORK
+  # ============================================================================
+
+  - id: rust-network-no-timeout
+    severity: ERROR
+    message: "Network operation without timeout may hang indefinitely. Set read/write timeouts."
+    languages: [rust]
+    patterns:
+      - pattern: TcpStream::connect($ADDR)
+      - pattern-not: |
+          $STREAM.set_read_timeout(...)?;
+          ...
+          TcpStream::connect($ADDR)
+    metadata:
+      category: security
+      cwe: "CWE-400"
+      confidence: HIGH
+
+  - id: rust-network-tls-no-verify
+    severity: ERROR
+    message: "TLS certificate verification disabled. Never use dangerous_configuration in production."
+    languages: [rust]
+    patterns:
+      - pattern: |
+          ClientConfig::builder()
+              ...
+              .dangerous()
+              ...
+    metadata:
+      category: security
+      cwe: "CWE-295"
+      confidence: HIGH
+
+  # ============================================================================
+  # DEPENDENCY
+  # ============================================================================
+
+  - id: rust-dep-deprecated-crate
+    severity: WARNING
+    message: "Use of crate with known security vulnerabilities or deprecated status. Review and upgrade."
+    languages: [rust]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              use native_tls::...;
+    metadata:
+      category: security
+      cwe: "CWE-1104: Use of Unmaintained Third Party Components"
+      confidence: LOW

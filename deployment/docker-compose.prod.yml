@@ -1,0 +1,107 @@
+# Hydra-Pro Production Deployment
+# Uses Docker secrets for key material, read-only rootfs, isolated networks
+
+version: "3.9"
+
+services:
+  fortress:
+    image: ghcr.io/fortress/hydra-pro:latest
+    command: defend --config /run/secrets/fortress_config
+    restart: unless-stopped
+    networks:
+      - c2_net
+      - mgmt_net
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - BPF
+      - SYS_RESOURCE
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+      - /var/lib/hydra:size=128M,mode=0700
+    volumes:
+      - fortress_ebpf:/sys/fs/bpf:shared
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+    secrets:
+      - fortress_config
+      - server_private_key
+    environment:
+      FORTRESS_KEY_FILE: /run/secrets/server_private_key
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits: { cpus: '4', memory: 4096M }
+        reservations: { cpus: '2', memory: 1024M }
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:hydra-fortress
+
+  teamserver:
+    image: ghcr.io/fortress/hydra-pro:latest
+    command: teamserver --config /run/secrets/teamserver_config
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "8443:8443"
+    networks:
+      - c2_net
+    read_only: true
+    tmpfs:
+      - /tmp:size=32M,mode=1777
+    secrets:
+      - teamserver_config
+      - tls_cert
+      - tls_key
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    deploy:
+      resources:
+        limits: { cpus: '2', memory: 1024M }
+    security_opt:
+      - no-new-privileges:true
+
+  builder:
+    image: ghcr.io/fortress/hydra-builder:latest
+    profiles: ["builder"]
+    command: --server wss://teamserver:8443 --transport ws
+    networks:
+      - mgmt_net
+    read_only: true
+    tmpfs: { /tmp:size=1G,mode=1777 }
+    deploy:
+      resources:
+        limits: { cpus: '4', memory: 4096M }
+
+networks:
+  c2_net:
+    internal: true
+    driver: bridge
+    ipam:
+      config: [{ subnet: 10.99.0.0/24 }]
+  mgmt_net:
+    internal: true
+    driver: bridge
+    ipam:
+      config: [{ subnet: 10.99.1.0/24 }]
+
+volumes:
+  fortress_ebpf:
+    driver: local
+
+secrets:
+  fortress_config:
+    file: ./secrets/fortress.yaml
+  server_private_key:
+    file: ./secrets/server.key
+  teamserver_config:
+    file: ./secrets/teamserver.yaml
+  tls_cert:
+    file: ./secrets/tls.crt
+  tls_key:
+    file: ./secrets/tls.key

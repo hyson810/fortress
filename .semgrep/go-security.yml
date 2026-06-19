@@ -1,0 +1,911 @@
+# Hydra-Pro Go Security Ruleset
+# 50+ rules covering the most common Go security vulnerabilities
+# Version: 1.0.0
+
+rules:
+  # ============================================================================
+  # CRYPTO: Weak Hash Functions
+  # ============================================================================
+
+  - id: go-crypto-weak-hash-md5
+    severity: ERROR
+    message: "MD5 is cryptographically broken. Use sha256 from crypto/sha256 instead."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: crypto/md5.New()
+          - pattern: crypto/md5.Sum(...)
+    metadata:
+      category: security
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+      confidence: HIGH
+
+  - id: go-crypto-weak-hash-sha1
+    severity: WARNING
+    message: "SHA-1 is vulnerable to collision attacks. Prefer sha256."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: crypto/sha1.New()
+          - pattern: crypto/sha1.Sum(...)
+    metadata:
+      category: security
+      cwe: "CWE-327"
+      confidence: HIGH
+
+  - id: go-crypto-weak-hash-ripemd160
+    severity: WARNING
+    message: "RIPEMD-160 is not recommended for new systems. Use sha256."
+    languages: [go]
+    pattern: crypto/ripemd160.New()
+    metadata:
+      category: security
+      cwe: "CWE-327"
+      confidence: HIGH
+
+  # ============================================================================
+  # CRYPTO: Weak Ciphers
+  # ============================================================================
+
+  - id: go-crypto-weak-cipher-des
+    severity: ERROR
+    message: "DES is trivially broken. Use aes from crypto/aes instead."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: crypto/des.NewCipher(...)
+          - pattern: crypto/des.NewTripleDESCipher(...)
+    metadata:
+      category: security
+      cwe: "CWE-327"
+      confidence: HIGH
+
+  - id: go-crypto-weak-cipher-rc4
+    severity: ERROR
+    message: "RC4 is broken. Use AES-GCM or ChaCha20-Poly1305 instead."
+    languages: [go]
+    pattern: crypto/rc4.NewCipher(...)
+    metadata:
+      category: security
+      cwe: "CWE-327"
+      confidence: HIGH
+
+  - id: go-crypto-weak-cipher-blowfish
+    severity: WARNING
+    message: "Blowfish 64-bit block size is vulnerable to Sweet32. Use AES."
+    languages: [go]
+    pattern: golang.org/x/crypto/blowfish.NewCipher(...)
+    metadata:
+      category: security
+      cwe: "CWE-327"
+      confidence: HIGH
+
+  - id: go-crypto-ecb-mode
+    severity: ERROR
+    message: "ECB mode leaks plaintext patterns. Use GCM or CBC with HMAC."
+    languages: [go]
+    pattern-either:
+      - pattern: |
+          cipher.NewECBEncrypter(...)
+      - pattern: |
+          cipher.NewECBDecrypter(...)
+    metadata:
+      category: security
+      cwe: "CWE-327"
+      confidence: HIGH
+
+  - id: go-crypto-cbc-no-hmac
+    severity: WARNING
+    message: "CBC mode without HMAC is vulnerable to padding oracle attacks. Prefer GCM."
+    languages: [go]
+    patterns:
+      - pattern: cipher.NewCBCEncrypter($BLOCK, $IV)
+      - pattern-not: |
+          ...
+          hmac.New(...)
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-327"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # CRYPTO: Insecure Random Number Generation
+  # ============================================================================
+
+  - id: go-crypto-insecure-rng-math-rand
+    severity: ERROR
+    message: "math/rand is not cryptographically secure. Use crypto/rand instead."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: math/rand.Intn(...)
+          - pattern: math/rand.Int63(...)
+          - pattern: math/rand.Read(...)
+          - pattern: math/rand.Int(...)
+          - pattern: math/rand.Uint32(...)
+          - pattern: math/rand.Uint64(...)
+          - pattern: math/rand.Float64(...)
+    metadata:
+      category: security
+      cwe: "CWE-338: Use of Cryptographically Weak Pseudo-Random Number Generator"
+      confidence: HIGH
+
+  - id: go-crypto-weak-seed
+    severity: WARNING
+    message: "Seeding with time.Now() is predictable. Use crypto/rand for security-sensitive randomness."
+    languages: [go]
+    patterns:
+      - pattern: rand.Seed(...)
+      - pattern: |
+          $R := rand.New(...)
+      - metavariable-regex:
+          metavariable: $R
+          regex: .*(RAND|rng|random).*
+    metadata:
+      category: security
+      cwe: "CWE-338"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # INJECTION: SQL Injection
+  # ============================================================================
+
+  - id: go-injection-sql-sprintf
+    severity: ERROR
+    message: "SQL query built with fmt.Sprintf is vulnerable to SQL injection. Use parameterized queries (? placeholders) instead."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $DB.Query(fmt.Sprintf(...))
+          - pattern: |
+              $DB.Exec(fmt.Sprintf(...))
+          - pattern: |
+              $DB.QueryRow(fmt.Sprintf(...))
+    metadata:
+      category: security
+      cwe: "CWE-89: SQL Injection"
+      confidence: HIGH
+
+  - id: go-injection-sql-concat
+    severity: ERROR
+    message: "SQL query built with string concatenation is vulnerable to injection. Use parameterized queries."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $DB.Query("...\" + $VAR + \"...")
+          - pattern: |
+              $DB.Exec("...\" + $VAR + \"...")
+          - pattern: |
+              $DB.Query($A + $B)
+          - pattern: |
+              $DB.Exec($A + $B)
+    metadata:
+      category: security
+      cwe: "CWE-89"
+      confidence: HIGH
+
+  # ============================================================================
+  # COMMAND INJECTION
+  # ============================================================================
+
+  - id: go-injection-command-exec
+    severity: ERROR
+    message: "os/exec with variable input may allow command injection. Use exec.Command with explicit arguments, never shell interpretation."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              exec.Command("sh", "-c", $INPUT)
+          - pattern: |
+              exec.Command("bash", "-c", $INPUT)
+          - pattern: |
+              exec.Command("cmd", "/C", $INPUT)
+          - pattern: |
+              exec.CommandContext($CTX, "sh", "-c", $INPUT)
+          - pattern: |
+              exec.CommandContext($CTX, "bash", "-c", $INPUT)
+          - pattern: |
+              exec.Command("powershell", "-Command", $INPUT)
+    metadata:
+      category: security
+      cwe: "CWE-78: OS Command Injection"
+      confidence: HIGH
+
+  - id: go-injection-command-system
+    severity: ERROR
+    message: "syscall.Exec with variable input is unsafe. Use exec.Command with explicit arguments."
+    languages: [go]
+    pattern: syscall.Exec($CMD, $ARGS, $ENV)
+    metadata:
+      category: security
+      cwe: "CWE-78"
+      confidence: HIGH
+
+  # ============================================================================
+  # PATH TRAVERSAL
+  # ============================================================================
+
+  - id: go-path-traversal-no-clean
+    severity: ERROR
+    message: "File path used without filepath.Clean is vulnerable to path traversal. Always clean user-supplied paths."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              os.Open($USER_PATH)
+          - pattern: |
+              os.Create($USER_PATH)
+          - pattern: |
+              os.ReadFile($USER_PATH)
+          - pattern: |
+              os.WriteFile($USER_PATH, ...)
+          - pattern: |
+              ioutil.ReadFile($USER_PATH)
+      - pattern-not: |
+          os.Open(filepath.Clean($USER_PATH))
+      - pattern-not: |
+          os.Create(filepath.Clean($USER_PATH))
+      - pattern-not: |
+          os.ReadFile(filepath.Clean($USER_PATH))
+      - pattern-not: |
+          os.WriteFile(filepath.Clean($USER_PATH), ...)
+    metadata:
+      category: security
+      cwe: "CWE-22: Improper Limitation of a Pathname to a Restricted Directory"
+      confidence: HIGH
+
+  - id: go-path-traversal-zip-slip
+    severity: ERROR
+    message: "Archive entry name used without cleaning is vulnerable to Zip Slip. Use filepath.Clean and verify path is within target directory."
+    languages: [go]
+    patterns:
+      - pattern: |
+          $TARGET := filepath.Join($BASE, $F.Header.Name)
+      - pattern-not: |
+          $TARGET := filepath.Join($BASE, filepath.Clean($F.Header.Name))
+    metadata:
+      category: security
+      cwe: "CWE-22"
+      confidence: HIGH
+
+  # ============================================================================
+  # RESOURCE LEAKS
+  # ============================================================================
+
+  - id: go-resource-leak-response-body
+    severity: ERROR
+    message: "http.Response Body must be closed to prevent resource leaks."
+    languages: [go]
+    patterns:
+      - pattern: |
+          $RESP, $ERR := http.Get(...)
+      - pattern-not: |
+          ...
+          defer $RESP.Body.Close()
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-404: Improper Resource Shutdown"
+      confidence: HIGH
+
+  - id: go-resource-leak-file-close
+    severity: WARNING
+    message: "File opened without visible Close or defer Close. Risk of resource leak."
+    languages: [go]
+    patterns:
+      - pattern: |
+          $F, $ERR := os.Open(...)
+      - pattern-not: |
+          ...
+          $F.Close()
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-404"
+      confidence: MEDIUM
+
+  - id: go-resource-leak-db-rows
+    severity: ERROR
+    message: "sql.Rows must be closed after iteration to release the database connection."
+    languages: [go]
+    patterns:
+      - pattern: |
+          $ROWS, $ERR := $DB.Query(...)
+      - pattern-not: |
+          ...
+          defer $ROWS.Close()
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-404"
+      confidence: HIGH
+
+  # ============================================================================
+  # NETWORK: No Timeouts
+  # ============================================================================
+
+  - id: go-network-no-http-timeout
+    severity: ERROR
+    message: "http.Client without Timeout is vulnerable to Slowloris and resource exhaustion. Set a timeout."
+    languages: [go]
+    patterns:
+      - pattern: |
+          &http.Client{}
+      - pattern-not: |
+          &http.Client{
+              Timeout: ...,
+          }
+    metadata:
+      category: security
+      cwe: "CWE-400: Uncontrolled Resource Consumption"
+      confidence: HIGH
+
+  - id: go-network-no-server-timeouts
+    severity: ERROR
+    message: "http.Server without ReadTimeout/WriteTimeout is vulnerable to Slowloris. Set timeouts."
+    languages: [go]
+    patterns:
+      - pattern: |
+          &http.Server{
+              ...
+          }
+      - pattern-not: |
+          &http.Server{
+              ...,
+              ReadTimeout: ...,
+              WriteTimeout: ...,
+              ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-400"
+      confidence: HIGH
+
+  - id: go-network-no-dialer-timeout
+    severity: WARNING
+    message: "net.Dialer without Timeout may hang indefinitely. Set a timeout."
+    languages: [go]
+    patterns:
+      - pattern: |
+          &net.Dialer{}
+      - pattern-not: |
+          &net.Dialer{
+              Timeout: ...,
+          }
+    metadata:
+      category: security
+      cwe: "CWE-400"
+      confidence: MEDIUM
+
+  - id: go-network-tls-insecure-skip
+    severity: ERROR
+    message: "InsecureSkipVerify disables TLS certificate validation. Never use in production."
+    languages: [go]
+    patterns:
+      - pattern: |
+          &tls.Config{
+              ...,
+              InsecureSkipVerify: true,
+              ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-295: Improper Certificate Validation"
+      confidence: HIGH
+
+  - id: go-network-tls-min-version
+    severity: WARNING
+    message: "TLS versions below 1.2 are insecure. Set MinVersion: tls.VersionTLS12 or higher."
+    languages: [go]
+    patterns:
+      - pattern: |
+          &tls.Config{
+              ...,
+              MinVersion: tls.VersionTLS10,
+              ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-326"
+      confidence: HIGH
+
+  # ============================================================================
+  # CONCURRENCY: Lock Copying
+  # ============================================================================
+
+  - id: go-concurrency-mutex-copy
+    severity: ERROR
+    message: "sync.Mutex/sync.RWMutex must not be copied by value. Pass by pointer."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              func ($RECV $T) $METHOD(...) {
+                  ...
+                  $RECV.$MUTEX.Lock()
+                  ...
+              }
+      - metavariable-regex:
+          metavariable: $T
+          regex: '^(?!.*\*).*'
+    metadata:
+      category: security
+      cwe: "CWE-667: Improper Locking"
+      confidence: HIGH
+
+  - id: go-concurrency-waitgroup-copy
+    severity: WARNING
+    message: "sync.WaitGroup must not be copied by value. Pass by pointer."
+    languages: [go]
+    patterns:
+      - pattern: |
+          func ($RECV $T) $METHOD(...) {
+              ...
+              $RECV.$WG.Add(...)
+              ...
+          }
+      - metavariable-regex:
+          metavariable: $T
+          regex: '^(?!.*\*).*'
+    metadata:
+      category: security
+      cwe: "CWE-667"
+      confidence: MEDIUM
+
+  - id: go-concurrency-goroutine-loop-var
+    severity: ERROR
+    message: "Loop variable captured by goroutine. Use a local copy or function parameter."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              for _, $ITEM := range $SLICE {
+                  ...
+                  go func() {
+                      ...
+                      $ITEM
+                      ...
+                  }()
+                  ...
+              }
+          - pattern: |
+              for $I := ...; $I < ...; $I++ {
+                  ...
+                  go func() {
+                      ...
+                      $I
+                      ...
+                  }()
+                  ...
+              }
+    metadata:
+      category: security
+      cwe: "CWE-366: Race Condition within a Thread"
+      confidence: HIGH
+
+  # ============================================================================
+  # MEMORY: Large Input Without Limit
+  # ============================================================================
+
+  - id: go-memory-json-maxbytes-missing
+    severity: WARNING
+    message: "json.NewDecoder without io.LimitReader or MaxBytesReader is vulnerable to memory exhaustion from large JSON payloads."
+    languages: [go]
+    patterns:
+      - pattern: |
+          json.NewDecoder($R)
+      - pattern-not: |
+          json.NewDecoder(http.MaxBytesReader(...))
+      - pattern-not: |
+          json.NewDecoder(io.LimitReader(...))
+    metadata:
+      category: security
+      cwe: "CWE-770: Allocation of Resources Without Limits or Throttling"
+      confidence: MEDIUM
+
+  - id: go-memory-ioutil-readall-nolimit
+    severity: WARNING
+    message: "ioutil.ReadAll / io.ReadAll without limiting the reader can exhaust memory. Use io.LimitReader."
+    languages: [go]
+    patterns:
+      - pattern: |
+          $BUF, $ERR := io.ReadAll($R)
+      - pattern-not: |
+          ...
+          io.LimitReader(...)
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-770"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # AUTH: Hardcoded Secrets
+  # ============================================================================
+
+  - id: go-auth-hardcoded-password
+    severity: ERROR
+    message: "Hardcoded password detected. Use environment variables or a secrets manager."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              const $PASSWORD = "..."
+          - metavariable-regex:
+              metavariable: $PASSWORD
+              regex: (?i)(password|passwd|secret|api.key|token|credential)
+    metadata:
+      category: security
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      confidence: HIGH
+
+  - id: go-auth-hardcoded-key
+    severity: ERROR
+    message: "Hardcoded cryptographic key. Keys must come from secure storage, never source code."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              var $K = []byte("...")
+          - pattern: |
+              $K := []byte("...")
+      - metavariable-regex:
+          metavariable: $K
+          regex: (?i)(key|secret|privkey|aes.key|hmac.key)
+    metadata:
+      category: security
+      cwe: "CWE-321: Use of Hard-coded Cryptographic Key"
+      confidence: HIGH
+
+  # ============================================================================
+  # ERROR HANDLING
+  # ============================================================================
+
+  - id: go-error-ignored
+    severity: WARNING
+    message: "Error return value is ignored. Always check errors."
+    languages: [go]
+    pattern: |
+      $FUNC(...)
+    metadata:
+      category: security
+      cwe: "CWE-252: Unchecked Return Value"
+      confidence: MEDIUM
+
+  - id: go-error-json-encode-ignored
+    severity: WARNING
+    message: "json.Marshal/json.Unmarshal error is ignored. Always check encoding errors."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $DATA, _ := json.Marshal(...)
+              ...
+          - pattern: |
+              $DATA, _ := json.Unmarshal(...)
+              ...
+    metadata:
+      category: security
+      cwe: "CWE-252"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # INPUT VALIDATION: Unsafe Deserialization
+  # ============================================================================
+
+  - id: go-input-gob-decode-untrusted
+    severity: ERROR
+    message: "gob.Decoder on untrusted input allows arbitrary type instantiation (RCE risk). Use a safe serialization format."
+    languages: [go]
+    patterns:
+      - pattern: |
+          gob.NewDecoder($R)
+      - pattern-not: |
+          ...
+          http.MaxBytesReader(...)
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      confidence: HIGH
+
+  - id: go-input-template-execute-user
+    severity: ERROR
+    message: "html/template or text/template Execute with user-controlled template string can lead to SSTI. Only execute pre-compiled templates from trusted sources."
+    languages: [go]
+    patterns:
+      - pattern: |
+          $T, _ := template.New("...").Parse($USER_INPUT)
+          ...
+          $T.Execute(...)
+    metadata:
+      category: security
+      cwe: "CWE-94: Improper Control of Generation of Code"
+      confidence: HIGH
+
+  # ============================================================================
+  # CRYPTO: Insufficient Key Size
+  # ============================================================================
+
+  - id: go-crypto-rsa-key-too-small
+    severity: ERROR
+    message: "RSA keys under 2048 bits are insecure. Use 2048 bits minimum, prefer 4096."
+    languages: [go]
+    patterns:
+      - pattern: rsa.GenerateKey($RNG, 1024)
+    metadata:
+      category: security
+      cwe: "CWE-326: Inadequate Encryption Strength"
+      confidence: HIGH
+
+  - id: go-crypto-nonce-reuse
+    severity: ERROR
+    message: "AES-GCM nonce reused with the same key breaks confidentiality and authenticity. Never reuse a nonce."
+    languages: [go]
+    patterns:
+      - pattern: |
+          $NONCE := make([]byte, 12)
+          ...
+          $GCM.Seal($NONCE, $NONCE, ...)
+    metadata:
+      category: security
+      cwe: "CWE-323: Reusing a Nonce, Key Pair in Encryption"
+      confidence: HIGH
+
+  # ============================================================================
+  # CRYPTO: Timing Attacks
+  # ============================================================================
+
+  - id: go-crypto-timing-string-compare
+    severity: WARNING
+    message: "String comparison for sensitive data (tokens, HMACs, passwords) is vulnerable to timing attacks. Use subtle.ConstantTimeCompare."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if $A == $B {
+                  ...
+              }
+          - pattern: |
+              if $A != $B {
+                  ...
+              }
+      - metavariable-regex:
+          metavariable: $A
+          regex: (?i)(token|hmac|digest|hash|signature|mac)
+    metadata:
+      category: security
+      cwe: "CWE-208: Observable Timing Discrepancy"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # FILESYSTEM
+  # ============================================================================
+
+  - id: go-fs-temp-file-predictable
+    severity: WARNING
+    message: "Predictable temp file path is vulnerable to symlink attacks. Use os.CreateTemp instead."
+    languages: [go]
+    patterns:
+      - pattern: os.Create("/tmp/...")
+    metadata:
+      category: security
+      cwe: "CWE-377: Insecure Temporary File"
+      confidence: HIGH
+
+  - id: go-fs-permissions-world-writable
+    severity: WARNING
+    message: "World-writable file permissions (0777, 0666) pose a security risk. Use restrictive permissions."
+    languages: [go]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              os.OpenFile($NAME, os.O_CREATE|..., 0777)
+          - pattern: |
+              os.WriteFile($NAME, $DATA, 0777)
+          - pattern: |
+              os.WriteFile($NAME, $DATA, 0666)
+          - pattern: |
+              os.Chmod($NAME, 0777)
+    metadata:
+      category: security
+      cwe: "CWE-732: Incorrect Permission Assignment for Critical Resource"
+      confidence: HIGH
+
+  # ============================================================================
+  # NETWORK: SSRF
+  # ============================================================================
+
+  - id: go-network-ssrf-user-url
+    severity: ERROR
+    message: "HTTP request to user-supplied URL may be SSRF. Validate and restrict the target URL."
+    languages: [go]
+    patterns:
+      - pattern: |
+          http.Get($USER_URL)
+      - pattern-not: |
+          ...
+          url.Parse(...)
+          ...
+          strings.HasPrefix(...)
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-918: Server-Side Request Forgery"
+      confidence: HIGH
+
+  # ============================================================================
+  # CRYPTO: X509
+  # ============================================================================
+
+  - id: go-crypto-x509-no-verify
+    severity: ERROR
+    message: "Certificate verification disabled. Set VerifyPeerCertificate or remove InsecureSkipVerify."
+    languages: [go]
+    patterns:
+      - pattern: |
+          &tls.Config{
+              ...,
+              InsecureSkipVerify: true,
+              ...,
+              VerifyPeerCertificate: nil,
+              ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-295"
+      confidence: HIGH
+
+  # ============================================================================
+  # CONCURRENCY: Channel Safety
+  # ============================================================================
+
+  - id: go-concurrency-chan-no-close
+    severity: WARNING
+    message: "Channel is never closed, which may cause goroutine leaks. Ensure channels are closed when no longer needed."
+    languages: [go]
+    patterns:
+      - pattern: |
+          $CH := make(chan $T)
+          ...
+      - pattern-not: |
+          ...
+          close($CH)
+          ...
+    metadata:
+      category: security
+      cwe: "CWE-404"
+      confidence: LOW
+
+  - id: go-concurrency-defer-unlock-missing
+    severity: WARNING
+    message: "Mutex.Lock without defer Unlock may deadlock on early return paths."
+    languages: [go]
+    patterns:
+      - pattern: |
+          $M.Lock()
+          ...
+          return ...
+      - pattern-not: |
+          $M.Lock()
+          defer $M.Unlock()
+          ...
+          return ...
+    metadata:
+      category: security
+      cwe: "CWE-833: Deadlock"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # INPUT VALIDATION
+  # ============================================================================
+
+  - id: go-input-strconv-atoi-no-check
+    severity: WARNING
+    message: "strconv.Atoi without error check may silently return 0 for invalid input. Always check the error."
+    languages: [go]
+    patterns:
+      - pattern: |
+          $N, _ := strconv.Atoi($S)
+    metadata:
+      category: security
+      cwe: "CWE-20: Improper Input Validation"
+      confidence: MEDIUM
+
+  - id: go-input-regex-dos
+    severity: WARNING
+    message: "regexp.Compile with user-supplied pattern is vulnerable to ReDoS. Only compile trusted patterns."
+    languages: [go]
+    patterns:
+      - pattern: regexp.Compile($USER_PAT)
+    metadata:
+      category: security
+      cwe: "CWE-1333: Inefficient Regular Expression Complexity"
+      confidence: MEDIUM
+
+  - id: go-input-xss-html-raw
+    severity: ERROR
+    message: "Unescaped HTML output is vulnerable to XSS. Use html/template for HTML output."
+    languages: [go]
+    pattern: |
+      fmt.Fprintf($W, "%s", userInput)
+    metadata:
+      category: security
+      cwe: "CWE-79: Cross-Site Scripting"
+      confidence: MEDIUM
+
+  # ============================================================================
+  # CRYPTO: Additional Patterns
+  # ============================================================================
+
+  - id: go-crypto-hmac-compare-leak
+    severity: WARNING
+    message: "hmac.Equal for authentication tag comparison is required to prevent timing attacks. Use hmac.Equal, not bytes.Equal or ==."
+    languages: [go]
+    patterns:
+      - pattern: |
+          if bytes.Equal($HMAC1, $HMAC2) {
+              ...
+          }
+    metadata:
+      category: security
+      cwe: "CWE-208"
+      confidence: HIGH
+
+  - id: go-crypto-nil-entropy
+    severity: ERROR
+    message: "crypto/rand.Read error ignored. Nil entropy means all subsequent key material is insecure."
+    languages: [go]
+    pattern: |
+      rand.Read($BUF)
+    metadata:
+      category: security
+      cwe: "CWE-331: Insufficient Entropy"
+      confidence: HIGH
+
+  # ============================================================================
+  # DEPENDENCY
+  # ============================================================================
+
+  - id: go-dependency-unsafe-package
+    severity: WARNING
+    message: "Use of unsafe package should be carefully reviewed and justified."
+    languages: [go]
+    pattern: |
+      import "unsafe"
+    metadata:
+      category: security
+      cwe: "CWE-242: Use of Inherently Dangerous Function"
+      confidence: MEDIUM
+
+  - id: go-dependency-syscall-package
+    severity: WARNING
+    message: "Use of syscall package is platform-specific. Prefer golang.org/x/sys/unix or golang.org/x/sys/windows."
+    languages: [go]
+    pattern: |
+      import "syscall"
+    metadata:
+      category: security
+      cwe: "CWE-1105: Machine-Dependent Functionality"
+      confidence: LOW
+
+  # ============================================================================
+  # CRYPTO: Non-Constant Time
+  # ============================================================================
+
+  - id: go-crypto-cipher-stream-xor
+    severity: WARNING
+    message: "Manual XOR for encryption is not authenticated. Use standard AEAD ciphers (AES-GCM, ChaCha20-Poly1305)."
+    languages: [go]
+    patterns:
+      - pattern: |
+          for $I := range $A {
+              $A[$I] ^= $B[$I]
+          }
+    metadata:
+      category: security
+      cwe: "CWE-327"
+      confidence: MEDIUM

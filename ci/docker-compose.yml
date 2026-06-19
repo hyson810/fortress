@@ -1,0 +1,100 @@
+# Hydra-Pro CI Test Environment
+# Spins up teamserver + shield + brain for integration testing.
+# NOT for production — see deployment/docker-compose.prod.yml
+
+version: "3.9"
+
+services:
+  teamserver:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+      target: builder
+    command: /usr/local/bin/fortress teamserver --config /etc/hydra/teamserver.yaml
+    ports:
+      - "443:443"     # HTTPS C2
+      - "8443:8443"   # WebSocket C2
+      - "53:53/udp"   # DNS tunnel
+    networks:
+      - c2_net
+    volumes:
+      - teamserver_keys:/etc/hydra
+    healthcheck:
+      test: ["CMD", "curl", "-f", "https://localhost/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: '2', memory: 512M }
+    security_opt:
+      - no-new-privileges:true
+
+  shield:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+      target: builder
+    command: /usr/local/bin/fortress defend --config /etc/hydra/fortress.yaml
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - BPF
+    privileged: true  # required for eBPF loading
+    networks:
+      - c2_net
+    volumes:
+      - shield_ebpf:/sys/fs/bpf
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+    healthcheck:
+      test: ["CMD", "fortress", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: '4', memory: 2048M }
+    security_opt:
+      - apparmor:hydra-shield
+
+  brain:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+      target: builder
+    command: /usr/local/bin/fortress brain --config /etc/hydra/fortress.yaml
+    networks:
+      - c2_net
+    depends_on:
+      shield: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: '2', memory: 1024M }
+
+  swarm:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+      target: builder
+    command: /usr/local/bin/fortress swarm --config /etc/hydra/fortress.yaml
+    networks:
+      - c2_net
+    depends_on:
+      brain: { condition: service_started }
+    deploy:
+      resources:
+        limits: { cpus: '1', memory: 256M }
+
+networks:
+  c2_net:
+    internal: true
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.99.0.0/24
+
+volumes:
+  teamserver_keys:
+    driver: local
+  shield_ebpf:
+    driver: local

@@ -1,0 +1,260 @@
+# Fortress V6 Hydra-Pro Shield — Tetragon-style TracingPolicy
+#
+# This TracingPolicy defines kernel-level process interception rules for
+# detecting advanced threats including kernel thread name spoofing,
+# suspicious ptrace attachments, fileless execution via memfd_create,
+# and unauthorized BPF program loads.
+#
+# Format: Tetragon TracingPolicy CRD (Custom Resource Definition)
+# Target: Tetragon >= 0.11 or equivalent Cilium-based enforcement
+#
+# Each rule specifies:
+#   - A kprobe or tracepoint hook
+#   - Match criteria (binary path, args, capabilities)
+#   - An action (audit, block, signal)
+#
+# This file is deployed by the shield BPF LSM manager
+# (see shield/bpf_lsm/audit.go) and complements the in-kernel
+# BPF programs in rootkit_detect.bpf.c, voidlink_detect.bpf.c, etc.
+
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: fortress-shield-kernel-intercept
+  namespace: kube-system
+  labels:
+    app: fortress
+    component: shield
+    phase: 2
+    owner: hydra-pro
+spec:
+  # -----------------------------------------------------------------------
+  # Rule 1: Detect process name spoofing via prctl(PR_SET_NAME)
+  #
+  # Attack: Malware calls prctl(PR_SET_NAME, "[kworker/u8:0]") to disguise
+  # itself as a kernel worker thread, evading process-list-based detection.
+  # -----------------------------------------------------------------------
+  kprobes:
+    - call: "__x64_sys_prctl"
+      syscall: true
+      args:
+        - index: 0
+          type: int
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Equal"
+              values:
+                - "15"  # PR_SET_NAME
+          matchActions:
+            - action: Audit
+              rateLimit: "10/1s"
+        - matchArgs:
+            - index: 0
+              operator: "Equal"
+              values:
+                - "15"
+            - index: 1
+              operator: "Prefix"
+              values:
+                - "["
+                - "kworker"
+                - "ksoftirqd"
+                - "kthreadd"
+                - "migration"
+                - "rcu_"
+                - "watchdog"
+                - "irq/"
+                - "mm_percpu"
+          matchActions:
+            - action: Sigkill
+              rateLimit: "1/10s"
+
+  # -----------------------------------------------------------------------
+  # Rule 2: Detect suspicious ptrace attachments
+  #
+  # Attack: Malware uses PTRACE_ATTACH or PTRACE_SEIZE to inject code into
+  # legitimate processes, or PTRACE_TRACEME as an anti-debug check.
+  # -----------------------------------------------------------------------
+  tracepoints:
+    - subsystem: "syscalls"
+      event: "sys_enter_ptrace"
+      args:
+        - index: 0
+          type: int64
+        - index: 1
+          type: pid_t
+        - index: 2
+          type: void_ptr
+        - index: 3
+          type: void_ptr
+      selectors:
+        # PTRACE_ATTACH (16) or PTRACE_SEIZE (4206) — code injection
+        - matchArgs:
+            - index: 0
+              operator: "InMap"
+              values:
+                - "16"    # PTRACE_ATTACH
+                - "4206"  # PTRACE_SEIZE
+          matchActions:
+            - action: Audit
+              rateLimit: "20/1s"
+        # PTRACE_ATTACH from non-root, non-system binary — highly suspicious
+        - matchArgs:
+            - index: 0
+              operator: "Equal"
+              values:
+                - "16"
+          matchBinaries:
+            - operator: "NotInMap"
+              values:
+                - "/usr/bin/gdb"
+                - "/usr/bin/strace"
+                - "/usr/bin/ltrace"
+                - "/usr/lib/systemd/systemd"
+          matchCapabilities:
+            - operator: "NotInMap"
+              values:
+                - "CAP_SYS_PTRACE"
+          matchActions:
+            - action: Sigkill
+              rateLimit: "2/30s"
+
+  # -----------------------------------------------------------------------
+  # Rule 3: Detect memfd_create with execute permission (MFD_EXEC)
+  #
+  # Attack: Fileless malware creates a memory-backed file descriptor with
+  # execute permission, writes a payload into it, and executes via
+  # fexecve() — leaving no trace on disk.
+  # -----------------------------------------------------------------------
+  tracepoints:
+    - subsystem: "syscalls"
+      event: "sys_enter_memfd_create"
+      args:
+        - index: 0
+          type: string
+        - index: 1
+          type: unsigned_int
+      selectors:
+        - matchArgs:
+            - index: 1
+              operator: "Mask"
+              values:
+                - "0x0010"  # MFD_EXEC
+          matchActions:
+            - action: Audit
+              rateLimit: "5/1s"
+        # MFD_EXEC + ALLOW_SEALING + non-system binary = block
+        - matchArgs:
+            - index: 1
+              operator: "Mask"
+              values:
+                - "0x0010"  # MFD_EXEC
+          matchBinaries:
+            - operator: "NotInMap"
+              values:
+                - "/usr/lib/systemd/systemd"
+                - "/usr/bin/dockerd"
+                - "/usr/bin/containerd"
+          matchActions:
+            - action: Sigkill
+              rateLimit: "1/60s"
+
+  # -----------------------------------------------------------------------
+  # Rule 4: Detect BPF program loads from non-root users
+  #
+  # Attack: Unprivileged users loading BPF programs to hook syscalls,
+  # hide processes, or intercept network traffic. Even with
+  # kernel.unprivileged_bpf_disabled=1, this catches configuration
+  # gaps and provides an audit trail.
+  # -----------------------------------------------------------------------
+  tracepoints:
+    - subsystem: "syscalls"
+      event: "sys_enter_bpf"
+      args:
+        - index: 0
+          type: int
+        - index: 1
+          type: void_ptr
+        - index: 2
+          type: unsigned_int
+      selectors:
+        # BPF_PROG_LOAD (5) — new program being loaded
+        - matchArgs:
+            - index: 0
+              operator: "Equal"
+              values:
+                - "5"  # BPF_PROG_LOAD
+          matchActions:
+            - action: Audit
+              rateLimit: "10/1s"
+        # BPF_PROG_LOAD from non-root UID — critical alert
+        - matchArgs:
+            - index: 0
+              operator: "Equal"
+              values:
+                - "5"
+          matchNamespaces:
+            - namespace: ""
+          matchCapabilityChanges:
+            - type: "audit"
+              operator: "IsNotIn"
+              values:
+                - "CAP_BPF"
+                - "CAP_SYS_ADMIN"
+          matchActions:
+            - action: Sigkill
+              rateLimit: "1/10s"
+
+  # -----------------------------------------------------------------------
+  # Rule 5: Detect process hiding via PRCTL (additional DKOM indicator)
+  #
+  # Attack: Some rootkits use prctl to manipulate process visibility
+  # flags before unlinking from the task list.
+  # -----------------------------------------------------------------------
+  kprobes:
+    - call: "getdents64"
+      syscall: false
+      args:
+        - index: 0
+          type: unsigned_int  # fd
+        - index: 1
+          type: void_ptr      # dirent
+        - index: 2
+          type: unsigned_int  # count
+      selectors:
+        # Monitor getdents64 on /proc to detect processes that should
+        # be visible but have been hidden from the directory listing.
+        - matchArgs: []
+          matchActions:
+            - action: Audit
+
+  # -----------------------------------------------------------------------
+  # Rule 6: Detect kernel module loading without CAP_SYS_MODULE
+  #
+  # Attack: Rootkits that load kernel modules via alternative methods
+  # (kexec, /dev/mem writing) bypassing the normal init_module path.
+  # -----------------------------------------------------------------------
+  tracepoints:
+    - subsystem: "syscalls"
+      event: "sys_enter_init_module"
+      args:
+        - index: 0
+          type: void_ptr
+        - index: 1
+          type: unsigned_int
+        - index: 2
+          type: string
+      selectors:
+        - matchActions:
+            - action: Audit
+              rateLimit: "5/1s"
+
+  # -----------------------------------------------------------------------
+  # Global configuration
+  # -----------------------------------------------------------------------
+  podSelector:
+    matchLabels: {}
+  nodeSelector:
+    matchLabels:
+      fortress-role: sentinel
