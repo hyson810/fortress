@@ -342,7 +342,39 @@ func matchContent(payload []byte, cm ContentMatch) bool {
 	searchSpace := payload[start:end]
 
 	if cm.Nocase {
-		return bytes.Contains(bytes.ToLower(searchSpace), bytes.ToLower(cm.Pattern))
+		return containsNoCase(searchSpace, cm.Pattern)
 	}
 	return bytes.Contains(searchSpace, cm.Pattern)
+}
+
+// containsNoCase reports whether data contains pattern, case-insensitively,
+// without allocating.
+func containsNoCase(data, pattern []byte) bool {
+	if len(pattern) == 0 {
+		return true
+	}
+	if len(pattern) > len(data) {
+		return false
+	}
+	for i := 0; i <= len(data)-len(pattern); i++ {
+		match := true
+		for j := 0; j < len(pattern); j++ {
+			da, pa := data[i+j], pattern[j]
+			// Lowercase both
+			if da >= 'A' && da <= 'Z' {
+				da += 32
+			}
+			if pa >= 'A' && pa <= 'Z' {
+				pa += 32
+			}
+			if da != pa {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
