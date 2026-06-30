@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fortress/v6/internal/audit"
 	"github.com/fortress/v6/internal/crowdsec"
 	"github.com/fortress/v6/internal/host"
 	"gopkg.in/yaml.v3"
@@ -45,6 +46,7 @@ type Config struct {
 	Suricata   SuricataConfig   `yaml:"suricata"`
 	CrowdSec   crowdsec.Config  `yaml:"crowdsec"`
 	Host       host.Config      `yaml:"host"`
+	Audit      audit.Config     `yaml:"audit"`
 	Whitelist  []string         `yaml:"whitelist"`
 	LogLevel   string           `yaml:"log_level"`
 	LogDir     string           `yaml:"log_dir"`
@@ -174,6 +176,7 @@ func Default() *Config {
 		},
 		CrowdSec: crowdsec.DefaultConfig(),
 		Host:     host.DefaultConfig(),
+		Audit:    audit.DefaultConfig(),
 		Weapons: WeaponsConfig{
 			NmapBin:       "/usr/bin/nmap",
 			NucleiBin:     "/usr/local/bin/nuclei",
@@ -259,6 +262,7 @@ func (c *Config) Watch(interval time.Duration) {
 					c.Suricata = newCfg.Suricata
 					c.CrowdSec = newCfg.CrowdSec
 					c.Host = newCfg.Host
+					c.Audit = newCfg.Audit
 					c.Whitelist = newCfg.Whitelist
 					c.parsedCIDRs = newCfg.parsedCIDRs
 					c.LogDir = newCfg.LogDir

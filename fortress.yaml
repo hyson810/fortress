@@ -123,6 +123,16 @@ host:
   inventory:
     interval: 1h
 
+audit:
+  enabled: false
+  logwatcher:
+    log_paths:
+      - /var/log/auth.log
+      - /var/log/syslog
+      - /var/log/kern.log
+  rootkit:
+    scan_interval: 24h
+
 # ───────────────────────────────────────────────────────────────────────────
 # Whitelist — exempt from scoring and counterstrike
 # ───────────────────────────────────────────────────────────────────────────

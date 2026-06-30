@@ -29,6 +29,7 @@ import (
 	"github.com/fortress/v6/internal/brain"
 	"github.com/fortress/v6/internal/capture"
 	"github.com/fortress/v6/internal/config"
+	"github.com/fortress/v6/internal/audit"
 	"github.com/fortress/v6/internal/crowdsec"
 	"github.com/fortress/v6/internal/engines"
 	"github.com/fortress/v6/internal/host"
@@ -146,6 +147,9 @@ type DetectionPipeline struct {
 	// Host-level security monitoring (FIM, vuln, CIS, inventory)
 	hostMonitor *host.HostMonitor
 
+	// Audit monitoring (log analysis + rootkit scanning)
+	auditMonitor *audit.AuditMonitor
+
 	// Brain — sharded lock-free scorer (190-204% faster than mutex version)
 	scorer *brain.ShardScorer
 
@@ -219,6 +223,11 @@ func NewDetectionPipeline(cfg *config.Config) *DetectionPipeline {
 		log.Printf("[pipeline] host monitor init: %v", err)
 	}
 
+	// Initialize audit monitor (if enabled)
+	if err := p.EnableAudit(); err != nil {
+		log.Printf("[pipeline] audit init: %v", err)
+	}
+
 	return p
 }
 
@@ -281,6 +290,16 @@ func (p *DetectionPipeline) EnableHostMonitor() error {
 	return nil
 }
 
+// EnableAudit initializes the audit monitor (log watcher + rootkit scanner).
+// Must be called before Start().
+func (p *DetectionPipeline) EnableAudit() error {
+	if !p.cfg.Audit.Enabled {
+		return nil
+	}
+	p.auditMonitor = audit.New(p.cfg.Audit)
+	return nil
+}
+
 // Start launches all detection goroutines in a sequential pipeline.
 // Goroutine count: same 5 as before, but now properly chained.
 func (p *DetectionPipeline) Start() {
@@ -323,6 +342,13 @@ func (p *DetectionPipeline) Start() {
 		go p.feedHostAlerts()
 	}
 
+	// Audit monitor (log analysis + rootkit scanning)
+	if p.auditMonitor != nil {
+		p.auditMonitor.Start(p.ctx)
+		p.wg.Add(1)
+		go p.feedAuditAlerts()
+	}
+
 	log.Printf("[pipeline] sequential pipeline started: packetCh→L1→L2→L3→L4→L5→L6→L7→scorer")
 }
 
@@ -342,6 +368,10 @@ func (p *DetectionPipeline) Stop() {
 
 	if p.hostMonitor != nil {
 		p.hostMonitor.Stop()
+	}
+
+	if p.auditMonitor != nil {
+		p.auditMonitor.Stop()
 	}
 
 	log.Printf("[pipeline] stopped — processed=%d dropped=%d threats=%d scorer=%d",
@@ -620,6 +650,24 @@ func (p *DetectionPipeline) feedHostAlerts() {
 				return
 			}
 			p.scorer.AddIntelMatch(alert.Message, fmt.Sprintf("host-monitor/%s", alert.Type))
+		}
+	}
+}
+
+
+// feedAuditAlerts forwards audit alerts (log analysis + rootkit) to
+// the brain scorer. These are treated as intel matches.
+func (p *DetectionPipeline) feedAuditAlerts() {
+	defer p.wg.Done()
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case alert, ok := <-p.auditMonitor.Alerts():
+			if !ok {
+				return
+			}
+			p.scorer.AddIntelMatch(alert.Message, fmt.Sprintf("audit/%s", alert.Type))
 		}
 	}
 }
