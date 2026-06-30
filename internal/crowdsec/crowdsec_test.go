@@ -153,3 +153,33 @@ func TestCrowdSecAlertChannelOverflow(t *testing.T) {
 		t.Errorf("alertCh length = %d, want at most 1000 (buffer size)", len(cs.alertCh))
 	}
 }
+
+func TestCrowdSecEndToEnd(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Enabled = true
+	cfg.Blocklist.Interval = time.Hour // won't trigger in test
+
+	var scorer brain.ShardScorer
+	cs := New(cfg, &scorer)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cs.Start(ctx)
+	defer cs.Stop()
+	defer cancel()
+
+	// Test reputation query (no network = empty result)
+	result, ok := cs.QueryReputation("1.2.3.4")
+	if ok {
+		t.Log("Reputation found:", result.Labels)
+	} else {
+		t.Log("No reputation (expected in test env)")
+	}
+
+	// Test alert reporting (no LAPI = dropped gracefully)
+	cs.ReportAlert(AlertItem{
+		IP:        "1.2.3.4",
+		Scenario:  "fortress/test",
+		Message:   "test alert",
+		Timestamp: time.Now(),
+	})
+}
