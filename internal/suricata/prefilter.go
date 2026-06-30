@@ -41,6 +41,8 @@ func NewPrefilter(rules []*Rule) *Prefilter {
 			}
 		case ProtoIP:
 			p.ipRules = append(p.ipRules, idx)
+		case ProtoICMP:
+			p.ipRules = append(p.ipRules, idx)
 		}
 	}
 
