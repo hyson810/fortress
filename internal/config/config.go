@@ -14,6 +14,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// CaptureConfig configures packet capture.
+type CaptureConfig struct {
+	Mode         string `yaml:"mode"`          // afpacket | inject
+	Interface    string `yaml:"interface"`     // network interface name
+	BufferFrames int    `yaml:"buffer_frames"` // AF_PACKET ring buffer frames
+	BufferSize   int    `yaml:"buffer_size"`   // AF_PACKET buffer size per frame
+	Promisc      bool   `yaml:"promisc"`       // promiscuous mode
+	Fanout       bool   `yaml:"fanout"`        // PACKET_FANOUT_HASH
+}
+
+// SuricataConfig configures the Suricata-compatible rule engine.
+type SuricataConfig struct {
+	Enabled    bool   `yaml:"enabled"`     // enable Suricata engine
+	RulesPath  string `yaml:"rules_path"`  // path to .rules files
+	WorkerPool int    `yaml:"worker_pool"` // number of worker goroutines
+	Prefilter  bool   `yaml:"prefilter"`   // enable prefilter optimization
+}
+
 // Config is the top-level Fortress configuration
 type Config struct {
 	Swarm      SwarmConfig      `yaml:"swarm"`
@@ -21,6 +39,8 @@ type Config struct {
 	Brain      BrainConfig      `yaml:"brain"`
 	Weapons    WeaponsConfig    `yaml:"weapons"`
 	Shield     ShieldConfig     `yaml:"shield"`
+	Capture    CaptureConfig    `yaml:"capture"`
+	Suricata   SuricataConfig   `yaml:"suricata"`
 	Whitelist  []string         `yaml:"whitelist"`
 	LogLevel   string           `yaml:"log_level"`
 	LogDir     string           `yaml:"log_dir"`
@@ -130,6 +150,20 @@ func Default() *Config {
 			CounterstrikeThreshold: 85.0,
 			BanDuration:            1800,
 		},
+		Capture: CaptureConfig{
+			Mode:         "inject",
+			Interface:    "eth0",
+			BufferFrames: 64,
+			BufferSize:   65536,
+			Promisc:      true,
+			Fanout:       true,
+		},
+		Suricata: SuricataConfig{
+			Enabled:    false,
+			RulesPath:  "./rules/",
+			WorkerPool: 8,
+			Prefilter:  true,
+		},
 		Weapons: WeaponsConfig{
 			NmapBin:       "/usr/bin/nmap",
 			NucleiBin:     "/usr/local/bin/nuclei",
@@ -211,6 +245,8 @@ func (c *Config) Watch(interval time.Duration) {
 					c.Engine = newCfg.Engine
 					c.Brain = newCfg.Brain
 					c.Weapons = newCfg.Weapons
+					c.Capture = newCfg.Capture
+					c.Suricata = newCfg.Suricata
 					c.Whitelist = newCfg.Whitelist
 					c.parsedCIDRs = newCfg.parsedCIDRs
 					c.LogDir = newCfg.LogDir
