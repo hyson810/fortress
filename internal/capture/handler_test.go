@@ -441,3 +441,161 @@ func TestByteSliceAliasing(t *testing.T) {
 	}
 	_ = originalRaw
 }
+
+func TestInjectHandlerInjectAndReceive(t *testing.T) {
+	h := NewInjectHandler()
+	defer h.Close()
+
+	raw := buildTestPacket()
+	h.Inject(raw)
+
+	select {
+	case pkt := <-h.Packets():
+		if pkt == nil {
+			t.Fatal("received nil packet")
+		}
+		if pkt.SrcIP != "192.168.1.1" {
+			t.Errorf("expected SrcIP 192.168.1.1, got %s", pkt.SrcIP)
+		}
+		if pkt.DstPort != 80 {
+			t.Errorf("expected DstPort 80, got %d", pkt.DstPort)
+		}
+		if pkt.Protocol != 6 {
+			t.Errorf("expected Protocol 6 (TCP), got %d", pkt.Protocol)
+		}
+		if pkt.TCPFlags != 2 {
+			t.Errorf("expected TCPFlags 2 (SYN), got %d", pkt.TCPFlags)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for injected packet")
+	}
+}
+
+func TestInjectHandlerMultiplePacketsOrder(t *testing.T) {
+	h := NewInjectHandler()
+	defer h.Close()
+
+	raw1 := buildTestPacket()
+	raw2 := buildUDPTestPacket()
+
+	h.Inject(raw1)
+	h.Inject(raw2)
+
+	pkt1 := <-h.Packets()
+	pkt2 := <-h.Packets()
+
+	if pkt1.SrcIP != "192.168.1.1" {
+		t.Errorf("expected first packet SrcIP 192.168.1.1, got %s", pkt1.SrcIP)
+	}
+	if pkt1.Protocol != 6 {
+		t.Errorf("expected first packet Protocol 6 (TCP), got %d", pkt1.Protocol)
+	}
+	if pkt2.SrcIP != "10.0.0.2" {
+		t.Errorf("expected second packet SrcIP 10.0.0.2, got %s", pkt2.SrcIP)
+	}
+	if pkt2.Protocol != 17 {
+		t.Errorf("expected second packet Protocol 17 (UDP), got %d", pkt2.Protocol)
+	}
+}
+
+func TestInjectHandlerClosePreventsInjection(t *testing.T) {
+	h := NewInjectHandler()
+	h.Close()
+
+	raw := buildTestPacket()
+	h.Inject(raw) // should be silently dropped
+
+	select {
+	case pkt := <-h.Packets():
+		if pkt != nil {
+			t.Errorf("unexpected packet received after close: %+v", pkt)
+		}
+	case <-time.After(100 * time.Millisecond):
+		// Expected: no packets after close
+	}
+}
+
+func TestInjectHandlerChannelFullNonBlocking(t *testing.T) {
+	h := NewInjectHandler()
+	defer h.Close()
+
+	raw := buildTestPacket()
+
+	// Fill the channel to capacity (1000)
+	for i := 0; i < 1000; i++ {
+		h.Inject(raw)
+	}
+
+	// The next Inject must not block; it should drop the packet
+	done := make(chan struct{})
+	go func() {
+		h.Inject(raw)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Non-blocking send works correctly
+	case <-time.After(time.Second):
+		t.Fatal("Inject blocked on full channel")
+	}
+
+	// Verify dropped counter
+	stats := h.Stats()
+	if stats.PacketsDropped.Load() < 1 {
+		t.Error("expected at least 1 dropped packet, got 0")
+	}
+}
+
+func TestInjectHandlerStatsCounters(t *testing.T) {
+	h := NewInjectHandler()
+	defer h.Close()
+
+	raw := buildTestPacket()
+
+	// Inject and consume before checking stats
+	h.Inject(raw)
+	<-h.Packets()
+
+	stats := h.Stats()
+	if stats.PacketsReceived.Load() != 1 {
+		t.Errorf("expected PacketsReceived 1, got %d", stats.PacketsReceived.Load())
+	}
+	if stats.BytesReceived.Load() != uint64(len(raw)) {
+		t.Errorf("expected BytesReceived %d, got %d", len(raw), stats.BytesReceived.Load())
+	}
+	if stats.PacketsDropped.Load() != 0 {
+		t.Errorf("expected PacketsDropped 0, got %d", stats.PacketsDropped.Load())
+	}
+
+	// Inject a second packet and verify stats update
+	raw2 := buildUDPTestPacket()
+	h.Inject(raw2)
+	<-h.Packets()
+
+	if stats.PacketsReceived.Load() != 2 {
+		t.Errorf("expected PacketsReceived 2 after second injection, got %d", stats.PacketsReceived.Load())
+	}
+	totalBytes := uint64(len(raw) + len(raw2))
+	if stats.BytesReceived.Load() != totalBytes {
+		t.Errorf("expected BytesReceived %d, got %d", totalBytes, stats.BytesReceived.Load())
+	}
+}
+
+func TestInjectHandlerNilPacketDoesNotCrash(t *testing.T) {
+	h := NewInjectHandler()
+	defer h.Close()
+
+	// Inject nil and empty data - should not crash, should not increment stats
+	h.Inject(nil)
+	h.Inject([]byte{})
+	h.Inject([]byte{0x00, 0x01, 0x02})
+
+	stats := h.Stats()
+	if stats.PacketsReceived.Load() != 0 {
+		t.Errorf("expected PacketsReceived 0 for invalid packets, got %d", stats.PacketsReceived.Load())
+	}
+	if stats.BytesReceived.Load() != 0 {
+		t.Errorf("expected BytesReceived 0 for invalid packets, got %d", stats.BytesReceived.Load())
+	}
+}
