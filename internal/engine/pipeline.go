@@ -232,7 +232,10 @@ func (p *DetectionPipeline) EnableSuricata() error {
 	// Initialize Suricata engine
 	eng, err := suricata.NewEngine(cfg.Suricata.RulesPath, cfg.Suricata.WorkerPool)
 	if err != nil {
-		return fmt.Errorf("suricata engine: %w", err)
+			if p.captureHandler != nil {
+				p.captureHandler.Close()
+			}
+			return fmt.Errorf("suricata engine: %w", err)
 	}
 	p.suricataEngine = eng
 
