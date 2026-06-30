@@ -69,9 +69,14 @@ func ParseRule(line string) (*Rule, error) {
 		return nil, nil
 	}
 
-	// Locate the options block between '(' and ')'.
+	// Locate the options block between '(' and the matching ')'.
+	// Use a paren-balancing scanner that skips quoted regions to handle
+	// parentheses inside quoted option values (e.g. msg:"Something (TEST)").
 	parenStart := strings.Index(line, "(")
-	parenEnd := strings.LastIndex(line, ")")
+	var parenEnd int = -1
+	if parenStart >= 0 {
+		parenEnd = findClosingParen(line, parenStart)
+	}
 
 	var headerPart string
 	var optionsPart string
@@ -278,6 +283,27 @@ func splitOptions(optsStr string) []string {
 		opts = append(opts, s)
 	}
 	return opts
+}
+
+// findClosingParen finds the matching ')' for a '(' at position start in line,
+// skipping over quoted strings so parentheses inside quotes are ignored.
+func findClosingParen(line string, start int) int {
+	depth := 1
+	inQuote := false
+	for i := start + 1; i < len(line); i++ {
+		switch {
+		case line[i] == '"':
+			inQuote = !inQuote
+		case line[i] == '(' && !inQuote:
+			depth++
+		case line[i] == ')' && !inQuote:
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // parseContentPattern parses a content pattern string (with surrounding quotes removed)
