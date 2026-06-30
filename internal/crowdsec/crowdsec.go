@@ -80,33 +80,6 @@ type AlertItem struct {
 	Source    string
 }
 
-// ReputationResult holds the result of an IP reputation query.
-type ReputationResult struct {
-	IP            string
-	Reputation    int
-	Confidence    float64
-	LastSeen      time.Time
-	Scope         string
-	Simulated     bool
-}
-
-// ReputationClient queries the CrowdSec LAPI for IP reputation.
-type ReputationClient struct {
-	cfg    ReputationConfig
-	cancel context.CancelFunc
-}
-
-// NewReputationClient creates a new ReputationClient.
-func NewReputationClient(cfg ReputationConfig) *ReputationClient {
-	return &ReputationClient{cfg: cfg}
-}
-
-// Query performs a reputation lookup for the given IP.
-func (rc *ReputationClient) Query(ctx context.Context, ip string) (*ReputationResult, bool) {
-	// TODO: implement LAPI query (V2 feature)
-	return nil, false
-}
-
 // CrowdSec is the main module that integrates CrowdSec threat intelligence.
 type CrowdSec struct {
 	cfg        Config
