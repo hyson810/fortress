@@ -3,6 +3,7 @@ package suricata
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,7 +52,7 @@ func (rs *Ruleset) Load() error {
 		filePath := filepath.Join(rs.path, entry.Name())
 		fileRules, loadErr := loadRuleFile(filePath)
 		if loadErr != nil {
-			// Log and skip — don't abort on a single bad rule file.
+			log.Printf("suricata: failed to load rule file %q: %v", filePath, loadErr)
 			continue
 		}
 		allRules = append(allRules, fileRules...)
@@ -129,7 +130,7 @@ func loadRuleFile(path string) ([]*Rule, error) {
 		line := scanner.Text()
 		rule, parseErr := ParseRule(line)
 		if parseErr != nil {
-			// Skip individual bad lines.
+			log.Printf("suricata: failed to parse rule in %q: %v", path, parseErr)
 			continue
 		}
 		if rule != nil {
