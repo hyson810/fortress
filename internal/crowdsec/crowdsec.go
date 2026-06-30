@@ -107,51 +107,6 @@ func (rc *ReputationClient) Query(ctx context.Context, ip string) (*ReputationRe
 	return nil, false
 }
 
-// AlertReporter batches alerts and forwards them to the CrowdSec LAPI.
-type AlertReporter struct {
-	cfg      ReporterConfig
-	alerts   chan AlertItem
-	cancel   context.CancelFunc
-	started  bool
-	mu       sync.Mutex
-}
-
-// NewAlertReporter creates a new AlertReporter with the given config.
-func NewAlertReporter(cfg ReporterConfig) *AlertReporter {
-	return &AlertReporter{
-		cfg:    cfg,
-		alerts: make(chan AlertItem, cfg.BatchSize*2),
-	}
-}
-
-// Start begins the alert flush loop.
-func (ar *AlertReporter) Start(ctx context.Context) {
-	ar.mu.Lock()
-	ar.started = true
-	ar.mu.Unlock()
-	// TODO: implement alert batching and LAPI push (V2 feature)
-	<-ctx.Done()
-}
-
-// Stop signals the reporter to shut down.
-func (ar *AlertReporter) Stop() {
-	ar.mu.Lock()
-	defer ar.mu.Unlock()
-	if ar.cancel != nil {
-		ar.cancel()
-	}
-	ar.started = false
-}
-
-// Report enqueues an alert for batching.
-func (ar *AlertReporter) Report(alert AlertItem) {
-	select {
-	case ar.alerts <- alert:
-	default:
-		// channel full, drop alert
-	}
-}
-
 // CrowdSec is the main module that integrates CrowdSec threat intelligence.
 type CrowdSec struct {
 	cfg        Config
