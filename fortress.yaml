@@ -102,6 +102,28 @@ crowdsec:
     score_malicious: 70
 
 # ───────────────────────────────────────────────────────────────────────────
+# Host-level security monitoring
+# FIM, vulnerability scanning, CIS benchmarks, and system inventory.
+# ───────────────────────────────────────────────────────────────────────────
+host:
+  enabled: false
+  fim:
+    watch_paths:
+      - /etc/
+      - /bin/
+      - /usr/bin/
+    hash_algo: sha256
+    scan_interval: 24h
+  vuln:
+    scan_interval: 24h
+    severity: MEDIUM
+  cis:
+    interval: 24h
+    profile: level_1
+  inventory:
+    interval: 1h
+
+# ───────────────────────────────────────────────────────────────────────────
 # Whitelist — exempt from scoring and counterstrike
 # ───────────────────────────────────────────────────────────────────────────
 whitelist:

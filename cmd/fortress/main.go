@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-<<<<<<< HEAD
 	"log"
 	"os"
 	"os/signal"
@@ -28,19 +27,10 @@ var (
 	target     = flag.String("target", "", "single target to scan")
 	mode       = flag.String("mode", "scan", "mode: scan, defend, fusion")
 	showTop    = flag.Int("top", 10, "show top N threats")
-=======
-	"os"
-)
-
-var (
-	configPath = flag.String("config", "/etc/fortress/fortress.yaml", "path to config file")
-	mode       = flag.String("mode", "defend", "operating mode: defend, scan, fusion, counterstrike, serve-mcp")
->>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)
 )
 
 func main() {
 	flag.Parse()
-<<<<<<< HEAD
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -638,8 +628,4 @@ func runCounterstrike(
 
 func init() {
 	log.SetFlags(log.Ltime | log.Lshortfile)
-=======
-	fmt.Fprintf(os.Stderr, "Fortress V6 — %s mode\n", *mode)
-	os.Exit(0)
->>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)
 }

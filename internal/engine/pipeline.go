@@ -31,6 +31,7 @@ import (
 	"github.com/fortress/v6/internal/config"
 	"github.com/fortress/v6/internal/crowdsec"
 	"github.com/fortress/v6/internal/engines"
+	"github.com/fortress/v6/internal/host"
 	"github.com/fortress/v6/internal/suricata"
 )
 
@@ -142,6 +143,9 @@ type DetectionPipeline struct {
 	// CrowdSec threat intelligence
 	crowdSec *crowdsec.CrowdSec
 
+	// Host-level security monitoring (FIM, vuln, CIS, inventory)
+	hostMonitor *host.HostMonitor
+
 	// Brain — sharded lock-free scorer (190-204% faster than mutex version)
 	scorer *brain.ShardScorer
 
@@ -210,6 +214,11 @@ func NewDetectionPipeline(cfg *config.Config) *DetectionPipeline {
 		log.Printf("[pipeline] crowdsec init: %v", err)
 	}
 
+	// Initialize host-level security monitor (if enabled)
+	if err := p.EnableHostMonitor(); err != nil {
+		log.Printf("[pipeline] host monitor init: %v", err)
+	}
+
 	return p
 }
 
@@ -262,6 +271,16 @@ func (p *DetectionPipeline) EnableCrowdSec() error {
 	return nil
 }
 
+// EnableHostMonitor initializes the host-level security monitor (FIM, vuln, CIS, inventory).
+// Must be called before Start().
+func (p *DetectionPipeline) EnableHostMonitor() error {
+	if !p.cfg.Host.Enabled {
+		return nil
+	}
+	p.hostMonitor = host.New(p.cfg.Host)
+	return nil
+}
+
 // Start launches all detection goroutines in a sequential pipeline.
 // Goroutine count: same 5 as before, but now properly chained.
 func (p *DetectionPipeline) Start() {
@@ -297,6 +316,13 @@ func (p *DetectionPipeline) Start() {
 		p.crowdSec.Start(p.ctx)
 	}
 
+	// Host-level security monitor (FIM, vuln, CIS, inventory)
+	if p.hostMonitor != nil {
+		p.hostMonitor.Start(p.ctx)
+		p.wg.Add(1)
+		go p.feedHostAlerts()
+	}
+
 	log.Printf("[pipeline] sequential pipeline started: packetCh→L1→L2→L3→L4→L5→L6→L7→scorer")
 }
 
@@ -312,6 +338,10 @@ func (p *DetectionPipeline) Stop() {
 
 	if p.crowdSec != nil {
 		p.crowdSec.Stop()
+	}
+
+	if p.hostMonitor != nil {
+		p.hostMonitor.Stop()
 	}
 
 	log.Printf("[pipeline] stopped — processed=%d dropped=%d threats=%d scorer=%d",
@@ -573,6 +603,23 @@ func (p *DetectionPipeline) feedSuricataAlerts() {
 					Source:    "suricata",
 				})
 			}
+		}
+	}
+}
+
+// feedHostAlerts forwards host-level security alerts (FIM, vuln, CIS) to
+// the brain scorer. These are treated as intel matches.
+func (p *DetectionPipeline) feedHostAlerts() {
+	defer p.wg.Done()
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case alert, ok := <-p.hostMonitor.Alerts():
+			if !ok {
+				return
+			}
+			p.scorer.AddIntelMatch(alert.Message, fmt.Sprintf("host-monitor/%s", alert.Type))
 		}
 	}
 }
