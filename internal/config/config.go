@@ -1,6 +1,5 @@
 package config
 
-<<<<<<< HEAD
 import (
 	"fmt"
 	"log"
@@ -12,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fortress/v6/internal/crowdsec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,6 +42,7 @@ type Config struct {
 	Shield     ShieldConfig     `yaml:"shield"`
 	Capture    CaptureConfig    `yaml:"capture"`
 	Suricata   SuricataConfig   `yaml:"suricata"`
+	CrowdSec   crowdsec.Config  `yaml:"crowdsec"`
 	Whitelist  []string         `yaml:"whitelist"`
 	LogLevel   string           `yaml:"log_level"`
 	LogDir     string           `yaml:"log_dir"`
@@ -64,6 +65,52 @@ type ShieldConfig struct {
 	ScanInterval  int  `yaml:"scan_interval"`    // Seconds between shield scans (default 30)
 }
 
+// SwarmConfig holds cluster/swarm settings.
+type SwarmConfig struct {
+	Name      string   `yaml:"name"`
+	Bind      string   `yaml:"bind"`
+	Peers     []string `yaml:"peers"`
+	GossipKey string   `yaml:"gossip_key"`
+}
+
+// EngineConfig holds XDP packet-engine settings.
+type EngineConfig struct {
+	XDPMode      string `yaml:"xdp_mode"`
+	AFXDQueue    int    `yaml:"af_xdp_queue"`
+	MaxPPS       int    `yaml:"max_pps"`
+	CPUPin       []int  `yaml:"cpu_pin"`
+	SynFloodPPS  int    `yaml:"syn_flood_pps"`
+	UdpFloodPPS  int    `yaml:"udp_flood_pps"`
+	IcmpFloodPPS int    `yaml:"icmp_flood_pps"`
+	RunUID       int    `yaml:"run_uid"` // UID to drop privileges to (default 65534 = nobody)
+	RunGID       int    `yaml:"run_gid"` // GID to drop privileges to (default 65534 = nogroup)
+	APIPort      int    `yaml:"api_port"`
+	HPSSHPort    int    `yaml:"hp_ssh_port"`
+	HPHTTPPort   int    `yaml:"hp_http_port"`
+	HPMySQLPort  int    `yaml:"hp_mysql_port"`
+}
+
+// BrainConfig holds the decision-engine settings.
+type BrainConfig struct {
+	RulesDir                string  `yaml:"rules_dir"`
+	MLModel                 string  `yaml:"ml_model"`
+	AutoCounterstrike       bool    `yaml:"auto_counterstrike"`
+	AggressiveMode          bool    `yaml:"aggressive_mode"`
+	CounterstrikeThreshold  float64 `yaml:"counterstrike_threshold"`
+	BanDuration             int     `yaml:"ban_duration"`
+}
+
+// WeaponsConfig holds offensive toolkit binary paths.
+type WeaponsConfig struct {
+	NmapBin       string `yaml:"nmap_bin"`
+	NucleiBin     string `yaml:"nuclei_bin"`
+	HydraBin      string `yaml:"hydra_bin"`
+	SqlmapBin     string `yaml:"sqlmap_bin"`
+	MsfBin        string `yaml:"msf_bin"`
+	Wordlists     string `yaml:"wordlists"`
+	MaxConcurrent int    `yaml:"max_concurrent"`
+}
+
 // parseCIDRList parses a list of strings into net.IPNet entries for those
 // that contain a "/" (CIDR notation). Entries without "/" are skipped —
 // they are matched as exact strings by IsWhitelisted.
@@ -82,87 +129,6 @@ func parseCIDRList(entries []string) []net.IPNet {
 	return cidrs
 }
 
-=======
-// Config is the top-level Fortress configuration.
-type Config struct {
-	Engine    EngineConfig   `yaml:"engine"`
-	Brain     BrainConfig    `yaml:"brain"`
-	Swarm     SwarmConfig    `yaml:"swarm"`
-	Weapons   WeaponsConfig  `yaml:"weapons"`
-	Whitelist []string       `yaml:"whitelist"`
-	LogDir    string         `yaml:"log_dir"`
-	DataDir   string         `yaml:"data_dir"`
-}
-
-// EngineConfig holds XDP packet-engine settings.
-type EngineConfig struct {
-	XDPMode       string `yaml:"xdp_mode"`
-	MaxPPS        int    `yaml:"max_pps"`
-	SynFloodPPS   int    `yaml:"syn_flood_pps"`
-	UDPFloodPPS   int    `yaml:"udp_flood_pps"`
-	ICMPFloodPPS  int    `yaml:"icmp_flood_pps"`
-	RunUID        int    `yaml:"run_uid"`
-	RunGID        int    `yaml:"run_gid"`
-}
-
-// BrainConfig holds the decision-engine settings.
-type BrainConfig struct {
-	RulesDir             string `yaml:"rules_dir"`
-	AutoCounterstrike    bool   `yaml:"auto_counterstrike"`
-	CounterstrikeThreshold int  `yaml:"counterstrike_threshold"`
-	BanDuration          int    `yaml:"ban_duration"`
-	AggressiveMode       bool   `yaml:"aggressive_mode"`
-}
-
-// SwarmConfig holds cluster/swarm settings.
->>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)
-type SwarmConfig struct {
-	Name      string   `yaml:"name"`
-	Bind      string   `yaml:"bind"`
-	Peers     []string `yaml:"peers"`
-	GossipKey string   `yaml:"gossip_key"`
-}
-
-<<<<<<< HEAD
-type EngineConfig struct {
-	XDPMode      string `yaml:"xdp_mode"`
-	AFXDQueue    int    `yaml:"af_xdp_queue"`
-	MaxPPS       int    `yaml:"max_pps"`
-	CPUPin       []int  `yaml:"cpu_pin"`
-	SynFloodPPS  int    `yaml:"syn_flood_pps"`
-	UdpFloodPPS  int    `yaml:"udp_flood_pps"`
-	IcmpFloodPPS int    `yaml:"icmp_flood_pps"`
-	RunUID       int    `yaml:"run_uid"` // UID to drop privileges to (default 65534 = nobody)
-	RunGID       int    `yaml:"run_gid"` // GID to drop privileges to (default 65534 = nogroup)
-		APIPort      int    `yaml:"api_port"`
-		HPSSHPort    int    `yaml:"hp_ssh_port"`
-		HPHTTPPort   int    `yaml:"hp_http_port"`
-		HPMySQLPort  int    `yaml:"hp_mysql_port"`
-}
-
-type BrainConfig struct {
-	RulesDir                string  `yaml:"rules_dir"`
-	MLModel                 string  `yaml:"ml_model"`
-	AutoCounterstrike       bool    `yaml:"auto_counterstrike"`
-	AggressiveMode          bool    `yaml:"aggressive_mode"`
-	CounterstrikeThreshold  float64 `yaml:"counterstrike_threshold"`
-	BanDuration             int     `yaml:"ban_duration"`
-}
-
-=======
-// WeaponsConfig holds offensive toolkit binary paths.
->>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)
-type WeaponsConfig struct {
-	NmapBin       string `yaml:"nmap_bin"`
-	NucleiBin     string `yaml:"nuclei_bin"`
-	HydraBin      string `yaml:"hydra_bin"`
-	SqlmapBin     string `yaml:"sqlmap_bin"`
-	MsfBin        string `yaml:"msf_bin"`
-	Wordlists     string `yaml:"wordlists"`
-	MaxConcurrent int    `yaml:"max_concurrent"`
-}
-
-<<<<<<< HEAD
 // Default returns a working default configuration
 func Default() *Config {
 	defaultWhitelist := []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
@@ -171,16 +137,10 @@ func Default() *Config {
 			Name: "hive-01",
 			Bind: "0.0.0.0:9700",
 		},
-=======
-// Default returns a Config populated with sensible defaults.
-func Default() Config {
-	return Config{
->>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)
 		Engine: EngineConfig{
 			XDPMode:      "generic",
 			MaxPPS:       1000000,
 			SynFloodPPS:  80,
-<<<<<<< HEAD
 			UdpFloodPPS:  200,
 			IcmpFloodPPS: 50,
 			RunUID:       65534, // nobody
@@ -209,26 +169,8 @@ func Default() Config {
 			RulesPath:  "./rules/",
 			WorkerPool: 8,
 			Prefilter:  true,
-=======
-			UDPFloodPPS:  200,
-			ICMPFloodPPS: 50,
-			RunUID:       65534,
-			RunGID:       65534,
 		},
-		Brain: BrainConfig{
-			RulesDir:              "/etc/fortress/rules.d",
-			AutoCounterstrike:     false,
-			CounterstrikeThreshold: 75,
-			BanDuration:           1800,
-			AggressiveMode:        false,
-		},
-		Swarm: SwarmConfig{
-			Name:      "hive-01",
-			Bind:      "0.0.0.0:9700",
-			Peers:     []string{},
-			GossipKey: "",
->>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)
-		},
+		CrowdSec: crowdsec.DefaultConfig(),
 		Weapons: WeaponsConfig{
 			NmapBin:       "/usr/bin/nmap",
 			NucleiBin:     "/usr/local/bin/nuclei",
@@ -238,9 +180,8 @@ func Default() Config {
 			Wordlists:     "/usr/share/wordlists",
 			MaxConcurrent: 50,
 		},
-<<<<<<< HEAD
 		Whitelist:   defaultWhitelist,
-			LogLevel:    "info",
+		LogLevel:    "info",
 		LogDir:      "logs",
 		parsedCIDRs: parseCIDRList(defaultWhitelist),
 	}
@@ -313,6 +254,7 @@ func (c *Config) Watch(interval time.Duration) {
 					c.Weapons = newCfg.Weapons
 					c.Capture = newCfg.Capture
 					c.Suricata = newCfg.Suricata
+					c.CrowdSec = newCfg.CrowdSec
 					c.Whitelist = newCfg.Whitelist
 					c.parsedCIDRs = newCfg.parsedCIDRs
 					c.LogDir = newCfg.LogDir
@@ -449,16 +391,3 @@ func (c *Config) SetWhitelist(entries []string) {
 	c.Whitelist = entries
 	c.parsedCIDRs = parseCIDRList(entries)
 }
-=======
-		Whitelist: []string{
-			"127.0.0.1",
-			"::1",
-			"10.0.0.0/8",
-			"172.16.0.0/12",
-			"192.168.0.0/16",
-		},
-		LogDir:  "/var/log/fortress",
-		DataDir: "/var/lib/fortress",
-	}
-}
->>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)

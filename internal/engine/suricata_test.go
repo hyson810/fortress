@@ -33,3 +33,23 @@ func TestDetectionPipeline_EnableSuricataWithRules(t *testing.T) {
 
 	p.Stop()
 }
+
+func TestDetectionPipeline_EnableCrowdSec(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.CrowdSec.Enabled = false
+	p := NewDetectionPipeline(cfg)
+	if p.crowdSec != nil {
+		t.Error("expected nil crowdsec when disabled")
+	}
+	p.Stop()
+}
+
+func TestDetectionPipeline_EnableCrowdSecEnabled(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.CrowdSec.Enabled = true
+	p := NewDetectionPipeline(cfg)
+	if p.crowdSec == nil {
+		t.Fatal("expected crowdsec to be initialized")
+	}
+	p.Stop()
+}

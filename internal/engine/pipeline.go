@@ -29,6 +29,7 @@ import (
 	"github.com/fortress/v6/internal/brain"
 	"github.com/fortress/v6/internal/capture"
 	"github.com/fortress/v6/internal/config"
+	"github.com/fortress/v6/internal/crowdsec"
 	"github.com/fortress/v6/internal/engines"
 	"github.com/fortress/v6/internal/suricata"
 )
@@ -138,6 +139,9 @@ type DetectionPipeline struct {
 	captureHandler capture.CaptureHandler
 	suricataEngine *suricata.Engine
 
+	// CrowdSec threat intelligence
+	crowdSec *crowdsec.CrowdSec
+
 	// Brain — sharded lock-free scorer (190-204% faster than mutex version)
 	scorer *brain.ShardScorer
 
@@ -201,6 +205,11 @@ func NewDetectionPipeline(cfg *config.Config) *DetectionPipeline {
 		log.Printf("[pipeline] suricata init: %v", err)
 	}
 
+	// Initialize CrowdSec threat intelligence (if enabled)
+	if err := p.EnableCrowdSec(); err != nil {
+		log.Printf("[pipeline] crowdsec init: %v", err)
+	}
+
 	return p
 }
 
@@ -242,6 +251,17 @@ func (p *DetectionPipeline) EnableSuricata() error {
 	return nil
 }
 
+// EnableCrowdSec initializes the CrowdSec threat intelligence module.
+// Must be called before Start().
+func (p *DetectionPipeline) EnableCrowdSec() error {
+	cfg := p.cfg
+	if !cfg.CrowdSec.Enabled {
+		return nil
+	}
+	p.crowdSec = crowdsec.New(cfg.CrowdSec, p.scorer)
+	return nil
+}
+
 // Start launches all detection goroutines in a sequential pipeline.
 // Goroutine count: same 5 as before, but now properly chained.
 func (p *DetectionPipeline) Start() {
@@ -272,6 +292,11 @@ func (p *DetectionPipeline) Start() {
 		go p.feedSuricataAlerts()
 	}
 
+	// CrowdSec threat intelligence
+	if p.crowdSec != nil {
+		p.crowdSec.Start(p.ctx)
+	}
+
 	log.Printf("[pipeline] sequential pipeline started: packetCh→L1→L2→L3→L4→L5→L6→L7→scorer")
 }
 
@@ -283,6 +308,10 @@ func (p *DetectionPipeline) Stop() {
 
 	if p.captureHandler != nil {
 		p.captureHandler.Close()
+	}
+
+	if p.crowdSec != nil {
+		p.crowdSec.Stop()
 	}
 
 	log.Printf("[pipeline] stopped — processed=%d dropped=%d threats=%d scorer=%d",
@@ -518,7 +547,8 @@ func (p *DetectionPipeline) runScorer() {
 	}
 }
 
-// feedSuricataAlerts forwards Suricata rule matches to the brain scorer.
+// feedSuricataAlerts forwards Suricata rule matches to the brain scorer and
+// CrowdSec intelligence.
 // It reads alerts from the Suricata engine's alert channel and scores the
 // source IP using the intel match weight scaled by alert severity.
 func (p *DetectionPipeline) feedSuricataAlerts() {
@@ -533,6 +563,16 @@ func (p *DetectionPipeline) feedSuricataAlerts() {
 				return
 			}
 			p.scorer.AddIntelMatch(alert.SrcIP, alert.Msg)
+
+			if p.crowdSec != nil {
+				p.crowdSec.ReportAlert(crowdsec.AlertItem{
+					IP:        alert.SrcIP,
+					Scenario:  fmt.Sprintf("suricata/%d", alert.SID),
+					Message:   alert.Msg,
+					Timestamp: alert.Timestamp,
+					Source:    "suricata",
+				})
+			}
 		}
 	}
 }
