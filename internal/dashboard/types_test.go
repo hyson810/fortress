@@ -34,4 +34,7 @@ func TestWSMessageJSON(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
+	if decoded.Type != msg.Type {
+		t.Fatalf("Type mismatch: got %q, want %q", decoded.Type, msg.Type)
+	}
 }
