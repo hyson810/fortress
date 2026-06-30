@@ -1,8 +1,8 @@
-# Hydra-Pro CI Pipeline
+# Fortress CI Pipeline
 # Triggers: push to main, pull requests
 # Jobs: go-test (3 OS), rust-test, semgrep scan, BPF compile check
 
-name: Hydra-Pro CI
+name: Fortress CI
 
 on:
   push:
