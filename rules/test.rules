@@ -1,0 +1,5 @@
+# Sample Suricata rules for testing
+alert tcp $HOME_NET any -> $EXTERNAL_NET 80 (msg:"ET TROJAN Suspicious GET Request"; content:"GET"; nocase; sid:2000001; rev:1;)
+alert udp any any -> any 53 (msg:"ET DNS Query to Suspicious Domain"; content:"|01 00 00 01 00 00 00 00 00 00|"; sid:2000002; rev:1;)
+alert icmp $HOME_NET any -> $EXTERNAL_NET any (msg:"ET SCAN Ping Sweep"; dsize:8<>100; sid:2000003; rev:1;)
+alert ip any any -> any any (msg:"ET POLICY Suspicious IP Protocol Activity"; content:"|08 00|"; sid:2000004; rev:2;)
