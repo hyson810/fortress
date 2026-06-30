@@ -90,34 +90,6 @@ type ReputationResult struct {
 	Simulated     bool
 }
 
-// --- Stub sub-component types ---
-// These will be replaced with full implementations in later tasks.
-
-// BlocklistConsumer polls CrowdSec blocklists and feeds scores into the scorer.
-type BlocklistConsumer struct {
-	cfg    BlocklistConfig
-	cancel context.CancelFunc
-}
-
-// NewBlocklistConsumer creates a new BlocklistConsumer.
-func NewBlocklistConsumer(cfg BlocklistConfig) *BlocklistConsumer {
-	return &BlocklistConsumer{cfg: cfg}
-}
-
-// Start begins polling the blocklist on a background goroutine.
-func (bc *BlocklistConsumer) Start(ctx context.Context) {
-	ctx, bc.cancel = context.WithCancel(ctx)
-	// TODO: implement blocklist polling (V2 feature)
-	<-ctx.Done()
-}
-
-// Stop signals the blocklist consumer to shut down.
-func (bc *BlocklistConsumer) Stop() {
-	if bc.cancel != nil {
-		bc.cancel()
-	}
-}
-
 // ReputationClient queries the CrowdSec LAPI for IP reputation.
 type ReputationClient struct {
 	cfg    ReputationConfig

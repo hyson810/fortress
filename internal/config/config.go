@@ -1,5 +1,6 @@
 package config
 
+<<<<<<< HEAD
 import (
 	"fmt"
 	"log"
@@ -81,6 +82,40 @@ func parseCIDRList(entries []string) []net.IPNet {
 	return cidrs
 }
 
+=======
+// Config is the top-level Fortress configuration.
+type Config struct {
+	Engine    EngineConfig   `yaml:"engine"`
+	Brain     BrainConfig    `yaml:"brain"`
+	Swarm     SwarmConfig    `yaml:"swarm"`
+	Weapons   WeaponsConfig  `yaml:"weapons"`
+	Whitelist []string       `yaml:"whitelist"`
+	LogDir    string         `yaml:"log_dir"`
+	DataDir   string         `yaml:"data_dir"`
+}
+
+// EngineConfig holds XDP packet-engine settings.
+type EngineConfig struct {
+	XDPMode       string `yaml:"xdp_mode"`
+	MaxPPS        int    `yaml:"max_pps"`
+	SynFloodPPS   int    `yaml:"syn_flood_pps"`
+	UDPFloodPPS   int    `yaml:"udp_flood_pps"`
+	ICMPFloodPPS  int    `yaml:"icmp_flood_pps"`
+	RunUID        int    `yaml:"run_uid"`
+	RunGID        int    `yaml:"run_gid"`
+}
+
+// BrainConfig holds the decision-engine settings.
+type BrainConfig struct {
+	RulesDir             string `yaml:"rules_dir"`
+	AutoCounterstrike    bool   `yaml:"auto_counterstrike"`
+	CounterstrikeThreshold int  `yaml:"counterstrike_threshold"`
+	BanDuration          int    `yaml:"ban_duration"`
+	AggressiveMode       bool   `yaml:"aggressive_mode"`
+}
+
+// SwarmConfig holds cluster/swarm settings.
+>>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)
 type SwarmConfig struct {
 	Name      string   `yaml:"name"`
 	Bind      string   `yaml:"bind"`
@@ -88,6 +123,7 @@ type SwarmConfig struct {
 	GossipKey string   `yaml:"gossip_key"`
 }
 
+<<<<<<< HEAD
 type EngineConfig struct {
 	XDPMode      string `yaml:"xdp_mode"`
 	AFXDQueue    int    `yaml:"af_xdp_queue"`
@@ -113,6 +149,9 @@ type BrainConfig struct {
 	BanDuration             int     `yaml:"ban_duration"`
 }
 
+=======
+// WeaponsConfig holds offensive toolkit binary paths.
+>>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)
 type WeaponsConfig struct {
 	NmapBin       string `yaml:"nmap_bin"`
 	NucleiBin     string `yaml:"nuclei_bin"`
@@ -123,6 +162,7 @@ type WeaponsConfig struct {
 	MaxConcurrent int    `yaml:"max_concurrent"`
 }
 
+<<<<<<< HEAD
 // Default returns a working default configuration
 func Default() *Config {
 	defaultWhitelist := []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
@@ -131,10 +171,16 @@ func Default() *Config {
 			Name: "hive-01",
 			Bind: "0.0.0.0:9700",
 		},
+=======
+// Default returns a Config populated with sensible defaults.
+func Default() Config {
+	return Config{
+>>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)
 		Engine: EngineConfig{
 			XDPMode:      "generic",
 			MaxPPS:       1000000,
 			SynFloodPPS:  80,
+<<<<<<< HEAD
 			UdpFloodPPS:  200,
 			IcmpFloodPPS: 50,
 			RunUID:       65534, // nobody
@@ -163,6 +209,25 @@ func Default() *Config {
 			RulesPath:  "./rules/",
 			WorkerPool: 8,
 			Prefilter:  true,
+=======
+			UDPFloodPPS:  200,
+			ICMPFloodPPS: 50,
+			RunUID:       65534,
+			RunGID:       65534,
+		},
+		Brain: BrainConfig{
+			RulesDir:              "/etc/fortress/rules.d",
+			AutoCounterstrike:     false,
+			CounterstrikeThreshold: 75,
+			BanDuration:           1800,
+			AggressiveMode:        false,
+		},
+		Swarm: SwarmConfig{
+			Name:      "hive-01",
+			Bind:      "0.0.0.0:9700",
+			Peers:     []string{},
+			GossipKey: "",
+>>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)
 		},
 		Weapons: WeaponsConfig{
 			NmapBin:       "/usr/bin/nmap",
@@ -173,6 +238,7 @@ func Default() *Config {
 			Wordlists:     "/usr/share/wordlists",
 			MaxConcurrent: 50,
 		},
+<<<<<<< HEAD
 		Whitelist:   defaultWhitelist,
 			LogLevel:    "info",
 		LogDir:      "logs",
@@ -383,3 +449,16 @@ func (c *Config) SetWhitelist(entries []string) {
 	c.Whitelist = entries
 	c.parsedCIDRs = parseCIDRList(entries)
 }
+=======
+		Whitelist: []string{
+			"127.0.0.1",
+			"::1",
+			"10.0.0.0/8",
+			"172.16.0.0/12",
+			"192.168.0.0/16",
+		},
+		LogDir:  "/var/log/fortress",
+		DataDir: "/var/lib/fortress",
+	}
+}
+>>>>>>> 1f89c68 (feat: project scaffolding, config types, shared engine types, ringbuf, entropy, welford, cmsketch)
