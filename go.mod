@@ -9,7 +9,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/google/gopacket v1.1.19 // indirect
+require github.com/google/gopacket v1.1.19
 
 replace github.com/fortress/hydra-pro/shield/bpf_lsm => ./shield/bpf_lsm
 
