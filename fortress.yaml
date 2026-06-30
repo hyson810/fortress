@@ -68,6 +68,28 @@ shield:
   scan_interval: 30            # Seconds between shield scans
 
 # ───────────────────────────────────────────────────────────────────────────
+# Capture layer
+# Packet capture using AF_PACKET or inject (test) mode.
+# ───────────────────────────────────────────────────────────────────────────
+capture:
+  mode: inject              # afpacket | inject
+  interface: eth0
+  buffer_frames: 64
+  buffer_size: 65536
+  promisc: true
+  fanout: true
+
+# ───────────────────────────────────────────────────────────────────────────
+# Suricata-compatible rule engine
+# Pattern-matching engine using Aho-Corasick automaton and prefilter.
+# ───────────────────────────────────────────────────────────────────────────
+suricata:
+  enabled: false            # enable to activate rule engine
+  rules_path: ./rules/
+  worker_pool: 8
+  prefilter: true
+
+# ───────────────────────────────────────────────────────────────────────────
 # Whitelist — exempt from scoring and counterstrike
 # ───────────────────────────────────────────────────────────────────────────
 whitelist:
