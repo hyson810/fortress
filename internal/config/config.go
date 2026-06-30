@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fortress/v6/internal/dashboard"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,6 +43,7 @@ type Config struct {
 	Capture    CaptureConfig    `yaml:"capture"`
 	Suricata   SuricataConfig   `yaml:"suricata"`
 	Whitelist  []string         `yaml:"whitelist"`
+	Dashboard  dashboard.Config `yaml:"dashboard"`
 	LogLevel   string           `yaml:"log_level"`
 	LogDir     string           `yaml:"log_dir"`
 	mu         sync.RWMutex
@@ -174,6 +176,7 @@ func Default() *Config {
 			MaxConcurrent: 50,
 		},
 		Whitelist:   defaultWhitelist,
+		Dashboard:   dashboard.DefaultConfig(),
 			LogLevel:    "info",
 		LogDir:      "logs",
 		parsedCIDRs: parseCIDRList(defaultWhitelist),

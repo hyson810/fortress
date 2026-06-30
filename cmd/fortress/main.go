@@ -12,6 +12,7 @@ import (
 
 	"github.com/fortress/v6/internal/brain"
 	"github.com/fortress/v6/internal/config"
+	"github.com/fortress/v6/internal/dashboard"
 	"github.com/fortress/v6/internal/defense"
 	"github.com/fortress/v6/internal/engine"
 	"github.com/fortress/v6/internal/fusion"
@@ -305,6 +306,19 @@ func runDefense(cfg *config.Config) {
 	// ---------------------------------------------------------------------------
 	apiSrv := response.NewAPIServer(fmt.Sprintf(":%d", cfg.Engine.APIPort), pipeline.Scorer(), pipeline)
 	apiSrv.Start()
+
+	// ---------------------------------------------------------------------------
+	// 9b. Start optional dashboard server
+	// ---------------------------------------------------------------------------
+	if cfg.Dashboard.Enabled {
+		dashSrv := dashboard.New(cfg.Dashboard, &brainAdapter{scorer: pipeline.Scorer()})
+		if err := dashSrv.Start(); err != nil {
+			logger.Error("dashboard: %v", err)
+		} else {
+			logger.Info("dashboard UI started on :%d", cfg.Dashboard.Port)
+		}
+		defer dashSrv.Stop()
+	}
 
 	// ---------------------------------------------------------------------------
 	// 10. Counterstrike engine — periodic threat check + autonomous response
@@ -623,6 +637,55 @@ func runCounterstrike(
 					rec.IP, rec.Level.String())
 			}
 		}
+	}
+}
+
+// brainAdapter adapts *brain.ShardScorer to dashboard.BrainProvider.
+type brainAdapter struct {
+	scorer *brain.ShardScorer
+}
+
+func (a *brainAdapter) Top(n int) []interface{} {
+	records := a.scorer.Top(n)
+	result := make([]interface{}, len(records))
+	for i, r := range records {
+		var banExpires int64
+		if !r.BanExpires.IsZero() {
+			banExpires = r.BanExpires.Unix()
+		}
+		result[i] = map[string]interface{}{
+			"ip":               r.IP,
+			"score":            r.TotalScore,
+			"total_score":      r.TotalScore,
+			"scan_score":       r.ScanScore,
+			"flood_score":      r.FloodScore,
+			"anomaly_score":    r.AnomalyScore,
+			"honeypot_score":   r.HoneypotScore,
+			"intel_score":      r.IntelScore,
+			"level":            r.Level.String(),
+			"response":         r.ResponseLevel.String(),
+			"banned":           r.Banned,
+			"ban_expires":      banExpires,
+			"first_seen":       r.FirstSeen.Unix(),
+			"last_seen":        r.LastSeen.Unix(),
+		}
+	}
+	return result
+}
+
+func (a *brainAdapter) GetScore(ip string) (float64, string) {
+	score, level := a.scorer.GetScore(ip)
+	return score, level.String()
+}
+
+func (a *brainAdapter) Count() int {
+	return a.scorer.Count()
+}
+
+func (a *brainAdapter) GetMetrics() map[string]interface{} {
+	return map[string]interface{}{
+		"packets_processed": uint64(0),
+		"threats_detected":  uint64(0),
 	}
 }
 
