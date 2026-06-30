@@ -43,13 +43,12 @@ func (h *InjectHandler) Inject(raw []byte) {
 	copy(rawCopy, raw)
 	pkt.Raw = rawCopy
 
-	// Update stats
-	h.stats.PacketsReceived.Add(1)
-	h.stats.BytesReceived.Add(uint64(len(raw)))
 
 	// Non-blocking send to packetCh; if full, increment PacketsDropped
 	select {
 	case h.packetCh <- pkt:
+		h.stats.PacketsReceived.Add(1)
+		h.stats.BytesReceived.Add(uint64(len(raw)))
 	default:
 		h.stats.PacketsDropped.Add(1)
 	}
