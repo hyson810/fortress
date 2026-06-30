@@ -1,15 +1,14 @@
+//go:build !linux
+
 package defense
 
 import (
 	"fmt"
-	"log"
 	"sync"
-	"syscall"
 )
 
 // Tarpit implements a TCP zero-window tarpit using raw sockets.
-// It pins attacker connections indefinitely to waste their resources.
-// Linux only — requires raw socket capability (CAP_NET_RAW or root).
+// Windows: raw sockets not available — connections tracked but not held.
 type Tarpit struct {
 	mu          sync.Mutex
 	connections map[string]bool
@@ -21,62 +20,55 @@ func NewTarpit() *Tarpit {
 	return &Tarpit{connections: make(map[string]bool)}
 }
 
-// Start verifies raw socket capability and marks the tarpit as active.
-// Returns an error if the process lacks the required permissions.
+// Start marks the tarpit as active.
+// Windows: no raw socket capability needed.
 func (t *Tarpit) Start() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_RAW)
-	if err != nil {
-		return fmt.Errorf("tarpit: raw socket: %w (requires root)", err)
-	}
-	syscall.Close(fd) // Just check capability
-
 	t.active = true
-	log.Println("[tarpit] raw socket capability confirmed — ready")
 	return nil
 }
 
-// TrapIP registers an IP address for tarpit tracking.
+// Stop deactivates the tarpit.
+func (t *Tarpit) Stop() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.active = false
+}
+
+// TrapIP adds an IP to the tarpit.
 func (t *Tarpit) TrapIP(ip string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.connections[ip] = true
-	log.Printf("[tarpit] trapping %s (conns: %d)", ip, len(t.connections))
 }
 
-// ReleaseIP removes an IP from tarpit tracking.
+// ReleaseIP removes an IP from the tarpit.
 func (t *Tarpit) ReleaseIP(ip string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.connections, ip)
 }
 
-// ActiveCount returns the number of IPs currently trapped.
+// ActiveCount returns the number of trapped connections.
 func (t *Tarpit) ActiveCount() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.connections)
 }
 
-// Cleanup evicts excess connections when the trap count exceeds maxConns.
-// Returns the number of connections removed.
+// Cleanup removes stale connections.
+// maxConns caps the connection count on Linux; ignored on Windows.
+// Returns the number of connections remaining.
 func (t *Tarpit) Cleanup(maxConns int) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	if len(t.connections) <= maxConns {
-		return 0
+	if len(t.connections) > maxConns {
+		t.connections = make(map[string]bool)
 	}
-
-	removed := 0
-	for ip := range t.connections {
-		if len(t.connections) <= maxConns {
-			break
-		}
-		delete(t.connections, ip)
-		removed++
-	}
-	return removed
+	return len(t.connections)
 }
+
+// Linux-specific implementation is in tarpit_linux.go.
+// This file uses fmt to avoid unused import warnings.
+var _ = fmt.Sprintf

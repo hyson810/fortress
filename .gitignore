@@ -1,7 +1,26 @@
-/target/
-/muscle/target/
-**/*.o
-/fortress
+# Binaries
+fortress-linux
+fortress.exe
+*.exe
+*.test
+
+# Ide
+.vscode/
+.idea/
+
+# OS
 .DS_Store
-**/*.rs.bk
-Cargo.lock
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Dependencies
+vendor/
+
+# Local config
+fortress-alpha.yaml
+fortress-beta.yaml
+fortress.yaml
+/tmp/

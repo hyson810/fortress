@@ -10,7 +10,9 @@
 package brain
 
 import (
+	"log"
 	"math"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -234,6 +236,62 @@ func (ss *ShardScorer) Count() int {
 		shard.mu.RUnlock()
 	}
 	return total
+}
+
+// BoostSubnetNeighbors adds a score boost to all tracked IPs in the same /24
+// subnet as the given IP. Implements the "子网免疫" (subnet immunity) feature:
+// when one host in a /24 is malicious, neighbors are likely compromised too.
+func (ss *ShardScorer) BoostSubnetNeighbors(ip string, ratio float64) {
+	if ratio <= 0 {
+		ratio = 0.15
+	}
+
+	// Find the triggering record in its shard
+	triggerShard := ss.shards[shardIndex(ip)]
+	triggerShard.mu.RLock()
+	r, ok := triggerShard.records[ip]
+	if !ok {
+		triggerShard.mu.RUnlock()
+		return
+	}
+	boost := r.TotalScore * ratio
+	triggerIP := net.ParseIP(ip)
+	triggerShard.mu.RUnlock()
+
+	if triggerIP == nil || triggerIP.To4() == nil {
+		return // IPv6 not yet supported
+	}
+
+	triggerPrefix := triggerIP.Mask(net.CIDRMask(24, 32))
+	if triggerPrefix == nil {
+		return
+	}
+
+	boosted := 0
+	for _, shard := range ss.shards {
+		shard.mu.Lock()
+		for otherIP, otherR := range shard.records {
+			if otherIP == ip {
+				continue
+			}
+			parsed := net.ParseIP(otherIP)
+			if parsed == nil || parsed.To4() == nil {
+				continue
+			}
+			otherPrefix := parsed.Mask(net.CIDRMask(24, 32))
+			if triggerPrefix.Equal(otherPrefix) {
+				otherR.ScanScore += boost
+				recalcRecord(otherR)
+				boosted++
+			}
+		}
+		shard.mu.Unlock()
+	}
+
+	if boosted > 0 {
+		log.Printf("[shard_scorer] subnet boost: %s triggered %.1f boost to %d /24 neighbors",
+			ip, boost, boosted)
+	}
 }
 
 func recalcRecord(r *IPRecord) {

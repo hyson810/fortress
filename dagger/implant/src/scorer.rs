@@ -53,20 +53,8 @@ impl ShardScorer {
     pub fn new(
         scan: f64, flood: f64, anomaly: f64, honeypot: f64, intel: f64,
     ) -> Self {
-        const EMPTY: RwLock<HashMap<String, IpRecord>> = RwLock::new(HashMap::new());
-        let shards: [RwLock<HashMap<String, IpRecord>>; NUM_SHARDS] =
-            [EMPTY; NUM_SHARDS]; // Note: requires std::array::from_fn or unsafe init
-
         ShardScorer {
-            shards: unsafe {
-                // Safe: RwLock<HashMap> starts empty, no aliasing
-                let mut arr: [RwLock<HashMap<String, IpRecord>>; NUM_SHARDS] =
-                    std::mem::zeroed();
-                for item in &mut arr {
-                    std::ptr::write(item, RwLock::new(HashMap::new()));
-                }
-                arr
-            },
+            shards: std::array::from_fn(|_| RwLock::new(HashMap::new())),
             scan_weight: scan,
             flood_weight: flood,
             anomaly_weight: anomaly,

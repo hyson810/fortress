@@ -17,6 +17,10 @@ pub struct ImplantConfig {
     pub max_retries: u8,
     pub kill_date: u64,
     pub server_pubkey: [u8; 32],
+    /// Ed25519 public key for server handshake authentication (optional pinning).
+    /// [0u8; 32] means no pinning — signature is still verified against the key
+    /// the server provides, but the specific key is not pinned.
+    pub server_ed25519_pubkey: [u8; 32],
 }
 
 impl Default for ImplantConfig {
@@ -29,6 +33,7 @@ impl Default for ImplantConfig {
             max_retries: 3,
             kill_date: 0,
             server_pubkey: [0u8; 32],
+            server_ed25519_pubkey: [0u8; 32],
         }
     }
 }

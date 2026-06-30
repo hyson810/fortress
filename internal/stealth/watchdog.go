@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,11 @@ func (w *Watchdog) Start() {
 
 // loop is the main monitoring loop that periodically checks process health.
 func (w *Watchdog) loop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[watchdog] loop panic: %v\nstack: %s", r, debug.Stack())
+		}
+	}()
 	ticker := time.NewTicker(w.checkInterval)
 	defer ticker.Stop()
 	for {

@@ -1,0 +1,150 @@
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  FORTRESS V6 · 护网行动 · AGGRESSIVE CONFIG                ║
+# ║  掠食者模式 — 降低检测阈值 · 加速响应 · 全自动反击         ║
+# ╚══════════════════════════════════════════════════════════════╝
+#
+# Usage: fortress --config configs/aggressive.yaml --mode defend
+#
+# ⚠️  WARNING: This config enables AUTONOMOUS counterstrike.
+#     Only use during authorized exercises with clear ROE.
+#     Whitelist ALL friendly assets before deploying.
+
+# ── Swarm: 蜂群网络 ─────────────────────────────────────────────
+swarm:
+  name: "cyclops-hw-01"                          # 护网行动节点名
+  bind: "0.0.0.0:9700"
+  peers: []                                       # 单节点模式; 多节点时添加 peer IP
+  gossip_key: "env://FORTRESS_GOSSIP_KEY"         # 从环境变量注入
+
+# ── Engine: 引擎参数 ────────────────────────────────────────────
+engine:
+  # 检测阈值 — 比默认低 30-50%, 宁可多报不漏报
+  syn_flood_pps: 300          # 默认 1000 → 300 (更敏感)
+  udp_flood_pps: 500          # 默认 1500 → 500
+  icmp_flood_pps: 50          # 默认 200 → 50
+  port_scan_window_5s: 6      # 默认 12 → 6  (更快触发)
+  port_scan_window_30s: 12    # 默认 25 → 12
+  port_scan_window_300s: 30   # 默认 50 → 30
+  dns_query_flood: 15         # 默认 30 → 15
+  dns_entropy_threshold: 3.5  # 默认 4.5 → 3.5 (更敏感)
+  ssh_brute_limit: 5          # 默认 10 → 5
+  http_brute_limit: 8         # 默认 15 → 8
+  anomaly_z_threshold: 3.0    # 默认 4.0 → 3.0
+  cms_threshold: 4.5          # 默认 6.0 → 4.5
+
+  # BPF / XDP
+  xdp_mode: "generic"         # WSL2 用 generic; 物理机改 native
+  af_xdp_queue: 0
+  max_pps: 1000000
+  cpu_pin: [0, 1, 2, 3]      # 使用更多核心
+
+# ── Brain: 决策大脑 ─────────────────────────────────────────────
+brain:
+  rules_dir: "/etc/fortress/rules.d"
+  ml_model: ""
+
+  # 🔥 AGGRESSIVE MODE — 全自动反击
+  auto_counterstrike: true                # 自动反击! (默认 false)
+  counterstrike_threshold: 55.0           # D阶阈值从 85 降到 55
+  aggressive_mode: true                   # 启用激进权重
+  ban_duration: 7200                      # 封禁 2 小时 (默认 30 分钟)
+
+  # 响应阶梯阈值 (激进)
+  ladder:
+    tier_a_max: 15.0     # A阶上限  (默认 25)
+    tier_b_max: 35.0     # B阶上限  (默认 50)
+    tier_c_max: 55.0     # C阶上限  (默认 75)
+    tier_d_min: 55.0     # D阶触发  (默认 75)
+
+  # 衰减参数
+  decay_half_life: 1800  # 分数半衰期 30分钟 → 15分钟 (更快遗忘旧威胁)
+
+  # 关联参数
+  correlation_window: 30   # 关联窗口 60s → 30s
+  correlation_min_ips: 2   # 最少关联IP 3 → 2 (更容易触发协同告警)
+
+# ── Weapons: 武器配置 ───────────────────────────────────────────
+weapons:
+  nmap_bin: "/usr/bin/nmap"
+  nuclei_bin: "/usr/local/bin/nuclei"
+  hydra_bin: "/usr/bin/hydra"
+  sqlmap_bin: "/usr/bin/sqlmap"
+  msfconsole_bin: "/usr/bin/msfconsole"
+  amass_bin: "/usr/bin/amass"
+  gobuster_bin: "/usr/bin/gobuster"
+  responder_bin: "/usr/bin/responder"
+  john_bin: "/usr/sbin/john"
+  ffuf_bin: "/usr/bin/ffuf"
+  wordlists: "/usr/share/wordlists"
+
+  # 武器并发限制
+  max_concurrent_scans: 100     # 提高并发上限
+  scan_timeout: 120             # 单次扫描超时 120s
+  nuclei_severity: "critical,high,medium"  # 扫描所有中危及以上
+  nmap_timing: 4                # -T4 激进扫描
+  nmap_flags: "-sS -sV -sC -O --script vuln --max-retries 1"
+
+# ── Whitelist: 白名单 (护网行动前必须更新!) ──────────────────────
+whitelist:
+  # 本机
+  - "127.0.0.1"
+  - "::1"
+
+  # ⚠️  替换为你们的实际内网段:
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
+  - "192.168.0.0/16"
+
+  # ⚠️  添加友军C2服务器IP:
+  # - "X.X.X.X"
+
+  # ⚠️  添加裁判/观察员IP:
+  # - "Y.Y.Y.Y"
+
+  # ⚠️  添加队友设备:
+  # - "Z.Z.Z.Z"
+
+# ── Defense: 主动防御 ───────────────────────────────────────────
+defense:
+  honeypot_ssh_port: 2222
+  honeypot_http_port: 8080
+  honeypot_mysql_port: 3307
+
+  tarpit_enabled: true
+  tarpit_max_connections: 5000       # 提高上限
+  tarpit_window_size: 0              # TCP零窗口 (经典tarpit)
+
+  firewall_type: "nftables"          # nftables | iptables | ebpf
+  auto_block_threshold: 35.0         # B阶就自动封禁
+  auto_block_duration: 7200          # 封禁 2h
+
+  sinkhole_enabled: true
+  sinkhole_port: 53
+  dns_redirect_target: "127.0.0.1"
+
+  deception_enabled: true
+  llm_abyss_enabled: false           # LLM深渊需要GPU, WSL2默认关
+
+# ── Logging & Evidence ──────────────────────────────────────────
+log_dir: "/var/log/fortress"
+evidence_dir: "/var/lib/fortress/evidence"
+pcap_dir: "/var/lib/fortress/pcap"
+
+log_level: "info"                    # debug | info | warn | error
+json_log: true                       # JSON格式便于SIEM接入
+evidence_chain: true                 # SHA-256 哈希链防篡改
+
+# ── MCP AI Control Plane ────────────────────────────────────────
+mcp:
+  enabled: true
+  transport: "stdio"                  # stdio JSON-RPC for AI agent integration
+  auth_required: true
+  rate_limit: 60                      # 每分钟最大请求数
+
+# ── Response Channels ────────────────────────────────────────────
+response:
+  jsonl_log: true
+  webhook_url: ""                     # 填入你的 SIEM/SOAR webhook
+  discord_webhook: ""                 # 可选 Discord 通知
+  dashboard_port: 9090
+  dashboard_enabled: true

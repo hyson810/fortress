@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/crypto/hkdf"
 )
 
 // SessionState tracks a single implant's connection
@@ -58,11 +59,13 @@ func (sm *SessionManager) Register(pubkey []byte, hostname, osName string) (*Ses
 		return nil, fmt.Errorf("generate session id: %w", err)
 	}
 
-	h := sha256.New()
-	h.Write(shared[:])
-	h.Write(sessionID[:])
+	// HKDF-SHA256 — matches shared.DeriveSessionKey and Rust implant
+	// IKM = shared secret, salt = session ID, info = "dagger-session-v1"
+	hkdfReader := hkdf.New(sha256.New, shared[:], sessionID[:], []byte("dagger-session-v1"))
 	var sessionKey [32]byte
-	copy(sessionKey[:], h.Sum(nil))
+	if _, err := io.ReadFull(hkdfReader, sessionKey[:]); err != nil {
+		return nil, fmt.Errorf("hkdf: %w", err)
+	}
 
 	now := time.Now()
 	s := &SessionState{

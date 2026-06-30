@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 )
 
 // HoneypotType identifies the protocol a honeypot emulates.
@@ -92,7 +95,11 @@ func (hm *HoneypotManager) startPot(t HoneypotType, port int, handler func(net.C
 		listener: l,
 		maxConns: 1000,
 		onHit: func(r HitRecord) {
-			hm.hitCh <- r
+			select {
+			case hm.hitCh <- r:
+			default:
+				// hitCh full, drop hit to avoid blocking honeypot handler
+			}
 			hm.mu.Lock()
 			hm.hits = append(hm.hits, r)
 			hm.mu.Unlock()
@@ -109,6 +116,11 @@ func (hm *HoneypotManager) startPot(t HoneypotType, port int, handler func(net.C
 
 // acceptLoop accepts incoming connections and dispatches them to the handler.
 func (p *honeypotListener) acceptLoop(handler func(net.Conn, func(HitRecord))) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[honeypot] accept loop panic: %v\nstack: %s", r, debug.Stack())
+		}
+	}()
 	defer p.wg.Done()
 	for p.running.Load() {
 		conn, err := p.listener.Accept()
@@ -125,8 +137,14 @@ func (p *honeypotListener) acceptLoop(handler func(net.Conn, func(HitRecord))) {
 		p.connCount.Add(1)
 		p.wg.Add(1)
 		go func(c net.Conn) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[honeypot] handler panic: %v\nstack: %s", r, debug.Stack())
+				}
+			}()
 			defer p.wg.Done()
 			defer p.connCount.Add(-1)
+			defer c.Close()
 			c.SetReadDeadline(time.Now().Add(60 * time.Second))
 			handler(c, p.onHit)
 		}(conn)
@@ -152,6 +170,20 @@ func (hm *HoneypotManager) HitChannel() <-chan HitRecord {
 	return hm.hitCh
 }
 
+// CheckHit reports whether the given IP has triggered any honeypot
+// in the last 60 seconds.
+func (hm *HoneypotManager) CheckHit(ip string) bool {
+	hm.mu.Lock()
+	defer hm.mu.Unlock()
+	cutoff := time.Now().Add(-60 * time.Second)
+	for _, h := range hm.hits {
+		if h.IP == ip && h.Timestamp.After(cutoff) {
+			return true
+		}
+	}
+	return false
+}
+
 // RecentHits returns a snapshot of all recorded honeypot interactions.
 func (hm *HoneypotManager) RecentHits() []HitRecord {
 	hm.mu.Lock()
@@ -159,16 +191,48 @@ func (hm *HoneypotManager) RecentHits() []HitRecord {
 	return hm.hits
 }
 
+// RecordHit injects a honeypot interaction record for the given IP without
+// requiring an actual network connection. Used for testing and simulation
+// scenarios where TCP localhost is unavailable.
+func (hm *HoneypotManager) RecordHit(ip string) {
+	hm.mu.Lock()
+	defer hm.mu.Unlock()
+	r := HitRecord{
+		IP:        ip,
+		Port:      0,
+		Type:      "manual",
+		Timestamp: time.Now(),
+		Data:      "test injection",
+	}
+	hm.hits = append(hm.hits, r)
+	// Non-blocking send to channel.
+	select {
+	case hm.hitCh <- r:
+	default:
+	}
+}
+
 // handleSSH emulates an OpenSSH server banner and captures the client hello.
 func handleSSH(conn net.Conn, onHit func(HitRecord)) {
 	ip, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-	conn.Write([]byte("SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.7\r\n"))
+	if _, err := conn.Write([]byte("SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.7\r\n")); err != nil {
+		log.Printf("[honeypot/ssh] write banner: %v", err)
+		conn.Close()
+		return
+	}
 	buf := make([]byte, 1024)
-	n, _ := conn.Read(buf)
-	onHit(HitRecord{
-		IP: ip, Port: 2222, Type: SSHHoneypot,
-		Timestamp: time.Now(), Data: string(buf[:n]),
-	})
+	n, err := conn.Read(buf)
+	if err != nil {
+		log.Printf("[honeypot/ssh] read: %v", err)
+		conn.Close()
+		return
+	}
+	if n > 0 {
+		onHit(HitRecord{
+			IP: ip, Port: 2222, Type: SSHHoneypot,
+			Timestamp: time.Now(), Data: sanitizeLogInput(string(buf[:n])),
+		})
+	}
 	conn.Close()
 }
 
@@ -176,18 +240,27 @@ func handleSSH(conn net.Conn, onHit func(HitRecord)) {
 func handleHTTP(conn net.Conn, onHit func(HitRecord)) {
 	ip, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
 	buf := make([]byte, 4096)
-	n, _ := conn.Read(buf)
-	onHit(HitRecord{
-		IP: ip, Port: 8080, Type: HTTPHoneypot,
-		Timestamp: time.Now(), Data: string(buf[:n]),
-	})
-	conn.Write([]byte(
+	n, err := conn.Read(buf)
+	if err != nil {
+		log.Printf("[honeypot/http] read: %v", err)
+		conn.Close()
+		return
+	}
+	if n > 0 {
+		onHit(HitRecord{
+			IP: ip, Port: 8080, Type: HTTPHoneypot,
+			Timestamp: time.Now(), Data: sanitizeLogInput(string(buf[:n])),
+		})
+	}
+	if _, err := conn.Write([]byte(
 		"HTTP/1.1 404 Not Found\r\n" +
 			"Server: nginx/1.24.0\r\n" +
 			"Content-Type: text/html\r\n" +
 			"\r\n" +
 			"<html><body><h1>404 Not Found</h1></body></html>\r\n",
-	))
+	)); err != nil {
+		log.Printf("[honeypot/http] write response: %v", err)
+	}
 	conn.Close()
 }
 
@@ -198,12 +271,54 @@ func handleMySQL(conn net.Conn, onHit func(HitRecord)) {
 		0x4a, 0x00, 0x00, 0x00, 0x0a, 0x38, 0x2e, 0x30, 0x2e, 0x33, 0x36, 0x00,
 		0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	}
-	conn.Write(greeting)
+	if _, err := conn.Write(greeting); err != nil {
+		log.Printf("[honeypot/mysql] write greeting: %v", err)
+		conn.Close()
+		return
+	}
 	buf := make([]byte, 1024)
-	n, _ := conn.Read(buf)
-	onHit(HitRecord{
-		IP: ip, Port: 3307, Type: MySQLHoneypot,
-		Timestamp: time.Now(), Data: string(buf[:n]),
-	})
+	n, err := conn.Read(buf)
+	if err != nil {
+		log.Printf("[honeypot/mysql] read: %v", err)
+		conn.Close()
+		return
+	}
+	if n > 0 {
+		onHit(HitRecord{
+			IP: ip, Port: 3307, Type: MySQLHoneypot,
+			Timestamp: time.Now(), Data: sanitizeLogInput(string(buf[:n])),
+		})
+	}
 	conn.Close()
+}
+
+// sanitizeLogInput sanitizes attacker-controlled data before logging.
+// It truncates to max 512 bytes, replaces non-printable chars with '.',
+// and removes ANSI escape sequences.
+func sanitizeLogInput(s string) string {
+	// Truncate to 512 bytes
+	if len(s) > 512 {
+		s = s[:512]
+	}
+	// Remove ANSI escape sequences
+	var result strings.Builder
+	result.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b { // ESC
+			// Skip until we hit a letter (end of ANSI sequence)
+			for i++; i < len(s); i++ {
+				if (s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z') {
+					break
+				}
+			}
+			continue
+		}
+		r := rune(s[i])
+		if unicode.IsPrint(r) {
+			result.WriteByte(s[i])
+		} else {
+			result.WriteByte('.')
+		}
+	}
+	return result.String()
 }

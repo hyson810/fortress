@@ -16,10 +16,10 @@ import (
 // Build steps (run from repository root):
 //   clang -O2 -g -target bpf \
 //       -I/usr/include/x86_64-linux-gnu \
-//       -c kernel/src/xdp_filter.c -o kernel/loader/xdp_filter.o
+//       -c kernel/bpf/xdp_filter.c -o kernel/loader/xdp_filter.o
 //   clang -O2 -g -target bpf \
 //       -I/usr/include/x86_64-linux-gnu \
-//       -c kernel/src/tc_egress.c -o kernel/loader/tc_egress.o
+//       -c kernel/bpf/tc_egress.c -o kernel/loader/tc_egress.o
 //
 //go:embed xdp_filter.o
 var xdpBytes []byte

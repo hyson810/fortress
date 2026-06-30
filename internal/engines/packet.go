@@ -8,6 +8,7 @@
 package engines
 
 import (
+	"fmt"
 	"log"
 	"sort"
 	"sync"
@@ -38,6 +39,17 @@ var SensitivePorts = map[uint16]bool{
 	6379:  true, // Redis
 	27017: true, // MongoDB
 	11211: true, // Memcached
+	1521:  true, // Oracle
+	389:   true, // LDAP
+	636:   true, // LDAPS
+	3268:  true, // MS Global Catalog
+	3269:  true, // MS Global Catalog SSL
+	5985:  true, // WinRM HTTP
+	5986:  true, // WinRM HTTPS
+	502:   true, // Modbus (ICS/SCADA)
+	44818: true, // EtherNet/IP (ICS/SCADA)
+	47808: true, // BACnet (ICS/SCADA)
+	2404:  true, // IEC 60870-5-104 (ICS/SCADA)
 }
 
 // flagPatterns maps sorted TCP flag character combinations to Chinese
@@ -272,6 +284,16 @@ func (pi *PacketInspector) feedTCP(flags string, src string, dport uint16) []Thr
 				Detail: "目标端口 " + formatPort(dport),
 			})
 		}
+
+		// SMB-specific scan detection (EternalBlue/MS17-010 precursor).
+		if smbThreat := pi.DetectSMSScan(src, dport); smbThreat != nil {
+			threats = append(threats, *smbThreat)
+		}
+
+		// ICS/SCADA port scan detection.
+		if icsThreat := pi.DetectICSScan(src, dport); icsThreat != nil {
+			threats = append(threats, *icsThreat)
+		}
 	}
 
 	return threats
@@ -299,6 +321,52 @@ func (pi *PacketInspector) feedICMP(src string) []Threat {
 
 	if pi.checkFlood(src, pi.icmpFloodPPS, pi.icmpCounter) {
 		return []Threat{{Type: "ICMP洪水", IP: src}}
+	}
+	return nil
+}
+
+// DetectSMSScan checks if a TCP probe to ports 139/445 carries flags
+// consistent with SMB enumeration (EternalBlue precursor, SMBv1
+// negotiation, named pipe discovery). Returns a threat if detected.
+//
+// SMB scan signatures:
+//   - SYN to 139/445 with window size 0 (SMBv1 probe)
+//   - SYN to 445 with specific TCP options (SMB dialect negotiation)
+//   - Multiple ports 139 AND 445 from same IP within 5 seconds
+func (pi *PacketInspector) DetectSMSScan(srcIP string, dport uint16) *Threat {
+	if dport != 139 && dport != 445 {
+		return nil
+	}
+	if pi.whitelisted != nil && pi.whitelisted(srcIP) {
+		return nil
+	}
+	return &Threat{
+		Type:   "SMB扫描",
+		IP:     srcIP,
+		Detail: fmt.Sprintf("SMB端口探测: %d", dport),
+	}
+}
+
+// DetectICSScan checks if a probe targets industrial control system ports
+// (Modbus 502, EtherNet/IP 44818, BACnet 47808, IEC-104 2404).
+// ICS/SCADA port scans are high-severity because they indicate targeting
+// of critical infrastructure.
+func (pi *PacketInspector) DetectICSScan(srcIP string, dport uint16) *Threat {
+	icsPorts := map[uint16]string{
+		502:   "Modbus",
+		44818: "EtherNet/IP",
+		47808: "BACnet",
+		2404:  "IEC 60870-5-104",
+	}
+	if name, ok := icsPorts[dport]; ok {
+		if pi.whitelisted != nil && pi.whitelisted(srcIP) {
+			return nil
+		}
+		return &Threat{
+			Type:   "ICS/SCADA扫描",
+			IP:     srcIP,
+			Detail: fmt.Sprintf("工控协议端口探测: %s (%d)", name, dport),
+		}
 	}
 	return nil
 }

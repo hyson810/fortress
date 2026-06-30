@@ -1,7 +1,9 @@
 package brain
 
 import (
+	"log"
 	"math"
+	"net"
 	"sync"
 	"time"
 )
@@ -52,6 +54,23 @@ func DefaultWeights() DetectionWeights {
 		HoneypotTrip:   5.0,
 		IntelMatch:     2.0,
 		FingerprintHit: 1.0,
+	}
+}
+
+// AggressiveWeights returns detector weights tuned for active defense.
+// Thresholds are lower, response is faster, and honeypot/intel matches
+// carry more weight to accelerate escalation.
+func AggressiveWeights() DetectionWeights {
+	return DetectionWeights{
+		ScanDetect:     3.5,
+		FloodDetect:    4.5,
+		AnomalyDetect:  3.0,
+		DNSDetect:      2.5,
+		BruteForce:     5.0,
+		ARPDetect:      5.5,
+		HoneypotTrip:   7.0,
+		IntelMatch:     3.0,
+		FingerprintHit: 2.0,
 	}
 }
 
@@ -195,6 +214,67 @@ func (s *Scorer) AddIntelMatch(ip string, source string) {
 	r.IntelMatches = append(r.IntelMatches, source)
 	r.IntelScore += s.weights.IntelMatch
 	s.recalc(r)
+}
+
+// BoostSubnetNeighbors adds a score boost to all tracked IPs in the same /24
+// subnet as the given IP. This implements the V3.1 "子网免疫" (subnet immunity)
+// feature: when one host in a /24 is malicious, neighbors are likely compromised
+// too (botnet nodes, pivoted hosts, or lateral movement).
+//
+// The boost is small (10-20% of the triggering IP's score) to avoid false
+// positives while still elevating neighbors for operator attention.
+func (s *Scorer) BoostSubnetNeighbors(ip string, ratio float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if ratio <= 0 {
+		ratio = 0.15 // default: 15% boost
+	}
+
+	triggerIP := net.ParseIP(ip)
+	if triggerIP == nil {
+		return
+	}
+	triggerIP = triggerIP.To4()
+	if triggerIP == nil {
+		return // IPv6 not yet supported for subnet boost
+	}
+
+	r, ok := s.records[ip]
+	if !ok {
+		return
+	}
+	boost := r.TotalScore * ratio
+
+	// Scan all tracked IPs for same /24.
+	triggerPrefix := triggerIP.Mask(net.CIDRMask(24, 32))
+	boosted := 0
+	for otherIP, otherR := range s.records {
+		if otherIP == ip {
+			continue
+		}
+		parsed := net.ParseIP(otherIP)
+		if parsed == nil {
+			continue
+		}
+		parsed = parsed.To4()
+		if parsed == nil {
+			continue
+		}
+		otherPrefix := parsed.Mask(net.CIDRMask(24, 32))
+		if triggerPrefix.Equal(otherPrefix) {
+			// Add to ScanScore (not TotalScore) because recalc resets
+			// TotalScore from component scores.
+			otherR.ScanScore += boost
+			s.recalc(otherR)
+			boosted++
+		}
+	}
+
+	if boosted > 0 {
+		log.Printf("[scorer] subnet boost: %s triggered %.1f boost to %d /24 neighbors",
+			ip, boost, boosted)
+	}
 }
 
 // recalc recalculates total score and threat level (caller holds lock)

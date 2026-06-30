@@ -10,7 +10,9 @@ package memory
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +45,11 @@ func StartMemoryAnomalyDetector(interval time.Duration) (*MemoryAnomalyStats, fu
 	stopCh := make(chan struct{})
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[memory/anomaly] scan panic: %v\nstack: %s", r, debug.Stack())
+			}
+		}()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {

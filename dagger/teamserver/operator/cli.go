@@ -3,7 +3,10 @@ package operator
 import (
 	"bufio"
 	"fmt"
+	"io"
+	"log"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -19,11 +22,23 @@ func NewCLI(onList func() []string, onTask func(string, uint8, []byte, int) (int
 }
 
 func (cli *CLI) Run() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[cli] panic: %v\nstack: %s", r, debug.Stack())
+		}
+	}()
 	fmt.Println("Hydra-Pro Operator Console")
 	fmt.Println("Type 'help' for commands, 'exit' to quit")
 	for {
 		fmt.Print("hydra> ")
-		line, _ := cli.reader.ReadString('\n')
+		line, err := cli.reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				return
+			}
+			fmt.Printf("read error: %v\n", err)
+			return
+		}
 		line = strings.TrimSpace(line)
 		if line == "" { continue }
 		parts := strings.Fields(line)

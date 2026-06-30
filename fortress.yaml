@@ -1,32 +1,75 @@
-# Fortress v4 — Swarm Network Defense System
-# Configuration file
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  FORTRESS V6 · 独眼巨人 Cyclops  Configuration                         ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+# This file documents every configurable option. To reset to factory
+# defaults, delete or rename this file — the server auto-generates
+# sensible defaults on first run.
 
+# ───────────────────────────────────────────────────────────────────────────
+# Swarm / P2P Networking
+# Gossip-based mesh overlay for distributed threat intel sharing.
+# ───────────────────────────────────────────────────────────────────────────
 swarm:
+  # Node identifier — must be unique across the mesh.
   name: "hive-01"
+  # Listen address for gossip protocol. Format: "ip:port"
   bind: "0.0.0.0:9700"
+  # Seed peers: first node leaves empty; subsequent nodes list at least one.
   peers: []
-  gossip_key: "env://FORTRESS_GOSSIP_KEY"
+  # Pre-shared Ed25519 hex seed (openssl rand -hex 32). Empty = auto-gen.
+  gossip_key: ""
 
+# ───────────────────────────────────────────────────────────────────────────
+# Engine / Packet Capture & Flood Thresholds
+# ───────────────────────────────────────────────────────────────────────────
 engine:
-  xdp_mode: "generic"       # native|generic|offload
-  af_xdp_queue: 0
-  max_pps: 1000000
-  cpu_pin: [2, 3]
+  xdp_mode: "generic"          # generic | driver | offload
+  af_xdp_queue: 0              # AF_XDP queue (driver mode only)
+  max_pps: 1000000             # Backpressure threshold
+  cpu_pin: []                  # e.g. [0,2,4,6] for physical cores
+  syn_flood_pps: 80            # SYN flood threshold per source IP
+  udp_flood_pps: 200           # UDP flood threshold
+  icmp_flood_pps: 50           # ICMP flood threshold
+  run_uid: 65534               # Drop privileges to nobody
+  run_gid: 65534               # Drop privileges to nogroup
 
+# ───────────────────────────────────────────────────────────────────────────
+# Brain / Scoring & Autonomous Counterstrike
+# ───────────────────────────────────────────────────────────────────────────
 brain:
-  rules_dir: "/etc/fortress/rules.d"
-  ml_model: ""
-  auto_counterstrike: false
-  counterstrike_threshold: 85.0
-  ban_duration: 1800
+  rules_dir: "/etc/fortress/rules.d"   # Custom scoring rules (hot-reloadable)
+  ml_model: ""                         # Optional ML model path
+  auto_counterstrike: false            # Autonomous counterstrike execution
+  aggressive_mode: false               # Lower thresholds = more FPs
+  counterstrike_threshold: 85.0        # 0-100: score needed to trigger
+  ban_duration: 1800                   # Default ban in seconds (1800=30m)
 
+# ───────────────────────────────────────────────────────────────────────────
+# Weapons / External Tools for Offense & Fusion
+# ───────────────────────────────────────────────────────────────────────────
 weapons:
   nmap_bin: "/usr/bin/nmap"
   nuclei_bin: "/usr/local/bin/nuclei"
   hydra_bin: "/usr/bin/hydra"
+  sqlmap_bin: "/usr/bin/sqlmap"
+  msf_bin: "/usr/bin/msfconsole"
   wordlists: "/usr/share/wordlists"
   max_concurrent: 50
 
+# ───────────────────────────────────────────────────────────────────────────
+# Shield / Kernel-Level Defense (OPT-IN, zero overhead by default)
+# ───────────────────────────────────────────────────────────────────────────
+shield:
+  inject_detect: false         # Scan /proc for injection attempts
+  memory_anomaly: false        # RWX/hidden page detection
+  ftrace_integrity: false      # kprobe/ftrace hook verification
+  io_uring_detect: false       # io_uring anomaly detection
+  bpf_audit: false             # BPF LSM continuous auditing
+  scan_interval: 30            # Seconds between shield scans
+
+# ───────────────────────────────────────────────────────────────────────────
+# Whitelist — exempt from scoring and counterstrike
+# ───────────────────────────────────────────────────────────────────────────
 whitelist:
   - "127.0.0.1"
   - "::1"
@@ -34,4 +77,7 @@ whitelist:
   - "172.16.0.0/12"
   - "192.168.0.0/16"
 
+# ───────────────────────────────────────────────────────────────────────────
+# Logging
+# ───────────────────────────────────────────────────────────────────────────
 log_dir: "logs"

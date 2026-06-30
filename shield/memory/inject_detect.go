@@ -25,8 +25,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -760,6 +762,11 @@ func StartInjectionScanner(interval time.Duration) error {
 	scanDoneCh = make(chan struct{})
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[memory/inject] scan panic: %v\nstack: %s", r, debug.Stack())
+			}
+		}()
 		defer close(scanDoneCh)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()

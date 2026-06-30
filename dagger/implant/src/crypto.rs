@@ -6,6 +6,7 @@ use hkdf::Hkdf;
 use rand::rngs::OsRng;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::Zeroizing;
 
 pub const KEY_SIZE: usize = 32;
 pub const NONCE_SIZE: usize = 24;
@@ -25,16 +26,18 @@ impl EphemeralKeys {
     }
 }
 
-/// Compute shared secret from our private key + server's public key
-pub fn compute_shared(secret: &StaticSecret, server_pub: &PublicKey) -> [u8; KEY_SIZE] {
-    *secret.diffie_hellman(server_pub).as_bytes()
+/// Compute shared secret from our private key + server's public key.
+/// Wrapped in Zeroizing to zero the shared secret on drop.
+pub fn compute_shared(secret: &StaticSecret, server_pub: &PublicKey) -> Zeroizing<[u8; KEY_SIZE]> {
+    Zeroizing::new(*secret.diffie_hellman(server_pub).as_bytes())
 }
 
-/// Derive session key from shared secret using HKDF
-pub fn derive_session_key(shared: &[u8; KEY_SIZE], salt: &[u8], info: &[u8]) -> [u8; KEY_SIZE] {
+/// Derive session key from shared secret using HKDF.
+/// Wrapped in Zeroizing to zero the derived key on drop.
+pub fn derive_session_key(shared: &[u8; KEY_SIZE], salt: &[u8], info: &[u8]) -> Zeroizing<[u8; KEY_SIZE]> {
     let hk = Hkdf::<Sha256>::new(Some(salt), shared);
-    let mut okm = [0u8; KEY_SIZE];
-    hk.expand(info, &mut okm).expect("HKDF expand should not fail for 32B output");
+    let mut okm = Zeroizing::new([0u8; KEY_SIZE]);
+    hk.expand(info, &mut *okm).expect("HKDF expand should not fail for 32B output");
     okm
 }
 

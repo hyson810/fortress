@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"net"
-	"regexp"
 	"os"
+	"regexp"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -18,13 +20,27 @@ type Config struct {
 	Engine     EngineConfig     `yaml:"engine"`
 	Brain      BrainConfig      `yaml:"brain"`
 	Weapons    WeaponsConfig    `yaml:"weapons"`
+	Shield     ShieldConfig     `yaml:"shield"`
 	Whitelist  []string         `yaml:"whitelist"`
+	LogLevel   string           `yaml:"log_level"`
 	LogDir     string           `yaml:"log_dir"`
 	mu         sync.RWMutex
 	path       string
 	lastMod    time.Time
 	watchers   []func(*Config)
 	parsedCIDRs []net.IPNet    // pre-parsed CIDR whitelist entries
+}
+
+// ShieldConfig controls which Hydra-Pro shield modules are active.
+// All shield modules are OFF by default for zero-overhead baseline.
+// Enable only what you need for your threat model.
+type ShieldConfig struct {
+	InjectDetect  bool `yaml:"inject_detect"`   // Process injection detection (scans /proc)
+	MemoryAnomaly bool `yaml:"memory_anomaly"`  // Memory anomaly detection (RWX/hidden pages)
+	FtraceInteg   bool `yaml:"ftrace_integrity"` // Ftrace/kprobe hook integrity checking
+	IOUringDetect bool `yaml:"io_uring_detect"`  // io_uring anomaly detection
+	BPFAudit      bool `yaml:"bpf_audit"`        // BPF LSM whitelist + continuous audit
+	ScanInterval  int  `yaml:"scan_interval"`    // Seconds between shield scans (default 30)
 }
 
 // parseCIDRList parses a list of strings into net.IPNet entries for those
@@ -62,12 +78,17 @@ type EngineConfig struct {
 	IcmpFloodPPS int    `yaml:"icmp_flood_pps"`
 	RunUID       int    `yaml:"run_uid"` // UID to drop privileges to (default 65534 = nobody)
 	RunGID       int    `yaml:"run_gid"` // GID to drop privileges to (default 65534 = nogroup)
+		APIPort      int    `yaml:"api_port"`
+		HPSSHPort    int    `yaml:"hp_ssh_port"`
+		HPHTTPPort   int    `yaml:"hp_http_port"`
+		HPMySQLPort  int    `yaml:"hp_mysql_port"`
 }
 
 type BrainConfig struct {
 	RulesDir                string  `yaml:"rules_dir"`
 	MLModel                 string  `yaml:"ml_model"`
 	AutoCounterstrike       bool    `yaml:"auto_counterstrike"`
+	AggressiveMode          bool    `yaml:"aggressive_mode"`
 	CounterstrikeThreshold  float64 `yaml:"counterstrike_threshold"`
 	BanDuration             int     `yaml:"ban_duration"`
 }
@@ -98,6 +119,10 @@ func Default() *Config {
 			IcmpFloodPPS: 50,
 			RunUID:       65534, // nobody
 			RunGID:       65534, // nogroup
+			APIPort:      9090,
+			HPSSHPort:    2222,
+			HPHTTPPort:   8080,
+			HPMySQLPort:  3307,
 		},
 		Brain: BrainConfig{
 			RulesDir:               "/etc/fortress/rules.d",
@@ -115,6 +140,7 @@ func Default() *Config {
 			MaxConcurrent: 50,
 		},
 		Whitelist:   defaultWhitelist,
+			LogLevel:    "info",
 		LogDir:      "logs",
 		parsedCIDRs: parseCIDRList(defaultWhitelist),
 	}
@@ -161,6 +187,11 @@ func (c *Config) OnChange(fn func(*Config)) {
 // Watch polls for config file changes and triggers callbacks
 func (c *Config) Watch(interval time.Duration) {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[config] file watcher panic: %v\nstack: %s", r, debug.Stack())
+			}
+		}()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {

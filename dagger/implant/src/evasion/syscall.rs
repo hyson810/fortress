@@ -49,12 +49,17 @@ pub unsafe fn nt_allocate_virtual_memory(
 #[cfg(windows)]
 unsafe fn resolve_syscall_number(name: &str) -> Option<u32> {
     use std::ffi::CString;
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
     let cname = CString::new(name).ok()?;
-    let ntdll = winapi::um::libloaderapi::GetModuleHandleA(b"ntdll.dll\0".as_ptr() as *const i8);
-    if ntdll.is_null() { return None; }
-    let addr = winapi::um::libloaderapi::GetProcAddress(ntdll, cname.as_ptr());
-    if addr.is_null() { return None; }
-    let stub = addr as *const u8;
+    let ntdll = GetModuleHandleA(b"ntdll.dll\0".as_ptr());
+    if ntdll == 0 {
+        return None;
+    }
+    let addr = GetProcAddress(ntdll, cname.as_ptr() as *const u8);
+    let stub = match addr {
+        Some(f) => f as *const u8,
+        None => return None,
+    };
     if *stub == 0x4C && *stub.add(1) == 0x8B && *stub.add(2) == 0xD1 {
         Some(*stub.add(4) as u32)
     } else {

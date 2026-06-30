@@ -3,8 +3,10 @@ package bpf_lsm
 import (
 	"crypto/sha256"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -149,6 +151,11 @@ func (a *BPFAuditor) StartContinuousAudit(interval time.Duration) error {
 	a.mu.Unlock()
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[bpf_lsm] audit loop panic: %v\nstack: %s", r, debug.Stack())
+			}
+		}()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {

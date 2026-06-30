@@ -1,0 +1,1 @@
+/mnt/c/Users/Administrator/fortress-v6/muscle/target/release/libfortress_afxdp.rlib: /mnt/c/Users/Administrator/fortress-v6/muscle/afxdp/src/dispatcher.rs /mnt/c/Users/Administrator/fortress-v6/muscle/afxdp/src/lib.rs /mnt/c/Users/Administrator/fortress-v6/muscle/afxdp/src/socket.rs /mnt/c/Users/Administrator/fortress-v6/muscle/afxdp/src/umem.rs

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -8,11 +9,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
-	"github.com/fortress/hydra-pro/dagger/teamserver/listener"
-	"github.com/fortress/hydra-pro/dagger/teamserver/operator"
+	"github.com/fortress/v6/dagger/teamserver/listener"
+	"github.com/fortress/v6/dagger/teamserver/operator"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,7 +27,8 @@ type TeamserverConfig struct {
 	} `yaml:"listen"`
 	Operator struct {
 		CLI string `yaml:"cli"`
-		API string `yaml:"api"`
+		API    string `yaml:"api"`
+		APIKey string `yaml:"api_key"`
 	} `yaml:"operator"`
 	TLS struct {
 		CertFile string `yaml:"cert_file"`
@@ -60,6 +63,11 @@ func main() {
 				return handleImplantData(sm, tm, transport, data)
 			})
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[https] panic: %v\nstack: %s", r, debug.Stack())
+				}
+			}()
 			if err := httpsListener.Start(); err != nil {
 				log.Printf("[https] %v", err)
 			}
@@ -89,7 +97,14 @@ func main() {
 
 	// Start REST API
 	if cfg.Operator.API != "" {
-		api := operator.NewAPI(cfg.Operator.API,
+		apiKey := cfg.Operator.APIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("DAGGER_API_KEY")
+		}
+		if apiKey == "" {
+			log.Println("[api] WARNING: no api_key configured — API is open to any local process")
+		}
+		api := operator.NewAPI(cfg.Operator.API, apiKey,
 			func() []string {
 				sessions := sm.List()
 				ids := make([]string, len(sessions))
@@ -106,6 +121,11 @@ func main() {
 			},
 		)
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[api] panic: %v\nstack: %s", r, debug.Stack())
+				}
+			}()
 			if err := api.Start(); err != nil {
 				log.Printf("[api] %v", err)
 			}
@@ -120,10 +140,19 @@ func main() {
 	log.Println("teamserver shutting down")
 }
 
+// maxImplantDataSize is the maximum allowed JSON payload from an implant (64KB).
+const maxImplantDataSize = 64 * 1024
+
+// validSessionIDLen is the expected hex-encoded length of a 16-byte session ID.
+const validSessionIDLen = 32
+
 // handleImplantData processes incoming data from any transport
 func handleImplantData(sm *SessionManager, tm *TaskManager, transport string, data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty data")
+	}
+	if len(data) > maxImplantDataSize {
+		return nil, fmt.Errorf("payload too large: %d bytes (max %d)", len(data), maxImplantDataSize)
 	}
 
 	// Parse message — register and checkin share fields
@@ -138,9 +167,16 @@ func handleImplantData(sm *SessionManager, tm *TaskManager, transport string, da
 	if err := json.Unmarshal(data, &reg); err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
-	// Sanitize user-controlled strings for log safety
+	// Sanitize user-controlled strings for log safety (strips non-printable chars)
 	reg.Hostname = sanitizeLogString(reg.Hostname)
 	reg.OS = sanitizeLogString(reg.OS)
+	// Default sanitized-empty fields to "unknown" so downstream code is safe
+	if reg.Hostname == "" {
+		reg.Hostname = "unknown"
+	}
+	if reg.OS == "" {
+		reg.OS = "unknown"
+	}
 
 	switch reg.Op {
 	case "register":
@@ -153,16 +189,37 @@ func handleImplantData(sm *SessionManager, tm *TaskManager, transport string, da
 			return nil, fmt.Errorf("register: %w", err)
 		}
 		log.Printf("[%s] new implant: %x (%s/%s)", transport, session.ID, session.Hostname, session.OS)
+
+		sessionIDHex := fmt.Sprintf("%x", session.ID)
+		x25519PubHex := hex.EncodeToString(sm.keys.Public[:])
+		ed25519PubHex := hex.EncodeToString(sm.keys.SignPublic[:])
+
+		// Sign the handshake blob: (server_x25519_pubkey || session_id || server_ed25519_pubkey)
+		sigBlob := make([]byte, 0, 32+len(sessionIDHex)+32)
+		sigBlob = append(sigBlob, sm.keys.Public[:]...)
+		sigBlob = append(sigBlob, sessionIDHex...)
+		sigBlob = append(sigBlob, sm.keys.SignPublic[:]...)
+		signature := ed25519.Sign(sm.keys.SignPrivate[:], sigBlob)
+
 		resp := map[string]interface{}{
-			"session_id": fmt.Sprintf("%x", session.ID),
-			"pubkey":     hex.EncodeToString(sm.keys.Public[:]),
+			"session_id":      sessionIDHex,
+			"pubkey":          x25519PubHex,
+			"ed25519_pubkey":  ed25519PubHex,
+			"signature":       hex.EncodeToString(signature),
 		}
-		respBytes, _ := json.Marshal(resp)
+		respBytes, err := json.Marshal(resp)
+		if err != nil {
+			return nil, fmt.Errorf("marshal response: %w", err)
+		}
 		return respBytes, nil
 
 	case "checkin":
 		if reg.SessionID == "" {
 			return nil, fmt.Errorf("checkin requires session_id")
+		}
+		// Validate session_id is a valid hex string of correct length
+		if !isValidSessionID(reg.SessionID) {
+			return nil, fmt.Errorf("invalid session_id format")
 		}
 		session := sm.Get(reg.SessionID)
 		if session == nil {
@@ -197,6 +254,20 @@ func sanitizeLogString(s string) string {
 		out = out[:256]
 	}
 	return string(out)
+}
+
+// isValidSessionID returns true if s is exactly 32 hex characters.
+func isValidSessionID(s string) bool {
+	if len(s) != validSessionIDLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func loadConfig(path string) (*TeamserverConfig, error) {

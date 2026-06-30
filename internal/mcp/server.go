@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"runtime/debug"
 	"sync"
 )
 
@@ -33,6 +34,11 @@ func NewServer() *Server {
 // Serve starts the MCP JSON-RPC loop on stdio. It blocks until EOF or Stop is
 // called.
 func (s *Server) Serve() error {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[mcp] panic: %v\nstack: %s", r, debug.Stack())
+		}
+	}()
 	s.running = true
 	log.Println("[mcp] MCP server started on stdio")
 	for s.running {
@@ -54,8 +60,12 @@ func (s *Server) handleMessage(data []byte) {
 		s.sendError(nil, -32700, "Parse error")
 		return
 	}
-	method, _ := msg["method"].(string)
-	id, _ := msg["id"]
+	method, ok := msg["method"].(string)
+	if !ok {
+		s.sendError(nil, -32600, "Invalid Request: method must be a string")
+		return
+	}
+	id := msg["id"]
 
 	switch method {
 	case "initialize":
@@ -74,8 +84,16 @@ func (s *Server) handleMessage(data []byte) {
 			"tools": s.tools.List(),
 		})
 	case "tools/call":
-		params, _ := msg["params"].(map[string]interface{})
-		toolName, _ := params["name"].(string)
+		params, ok := msg["params"].(map[string]interface{})
+		if !ok {
+			s.sendError(id, -32602, "Invalid params: params must be an object")
+			return
+		}
+		toolName, ok := params["name"].(string)
+		if !ok {
+			s.sendError(id, -32602, "Invalid params: name must be a string")
+			return
+		}
 		args, _ := params["arguments"].(map[string]interface{})
 		result, err := s.handlers.Call(toolName, args)
 		if err != nil {
@@ -94,10 +112,17 @@ func (s *Server) sendResult(id interface{}, result interface{}) {
 	resp := map[string]interface{}{
 		"jsonrpc": "2.0", "id": id, "result": result,
 	}
-	data, _ := json.Marshal(resp)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		log.Printf("[mcp] marshal result: %v", err)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.writer.Write(append(data, '\n'))
+	if _, err := s.writer.Write(append(data, '\n')); err != nil {
+		log.Printf("[mcp] write result: %v", err)
+		s.running = false
+	}
 }
 
 func (s *Server) sendError(id interface{}, code int, message string) {
@@ -107,10 +132,17 @@ func (s *Server) sendError(id interface{}, code int, message string) {
 			"code": code, "message": message,
 		},
 	}
-	data, _ := json.Marshal(resp)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		log.Printf("[mcp] marshal error: %v", err)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.writer.Write(append(data, '\n'))
+	if _, err := s.writer.Write(append(data, '\n')); err != nil {
+		log.Printf("[mcp] write error: %v", err)
+		s.running = false
+	}
 }
 
 // RegisterTool registers a tool definition and its handler.

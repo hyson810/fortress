@@ -61,7 +61,7 @@ func TestNewAPI(t *testing.T) {
 	onTask := func(id string, tp uint8, d []byte, to int) (interface{}, error) {
 		return nil, nil
 	}
-	api := NewAPI(":0", onList, onTask)
+	api := NewAPI(":0", "", onList, onTask)
 	if api == nil {
 		t.Fatal("NewAPI returned nil")
 	}
@@ -72,7 +72,7 @@ func TestAPIHandleSessions(t *testing.T) {
 	onTask := func(id string, tp uint8, d []byte, to int) (interface{}, error) {
 		return nil, nil
 	}
-	api := NewAPI(":0", onList, onTask)
+	api := NewAPI(":0", "", onList, onTask)
 
 	req := httptest.NewRequest("GET", "/api/v1/sessions", nil)
 	rec := httptest.NewRecorder()
@@ -91,7 +91,7 @@ func TestAPIHandleTask(t *testing.T) {
 	onTask := func(id string, tp uint8, d []byte, to int) (interface{}, error) {
 		return map[string]interface{}{"task_id": id, "type": tp}, nil
 	}
-	api := NewAPI(":0", onList, onTask)
+	api := NewAPI(":0", "", onList, onTask)
 
 	body := `{"session_id":"abc123","type":1,"data":"whoami","timeout":60}`
 	req := httptest.NewRequest("POST", "/api/v1/task", strings.NewReader(body))
@@ -109,7 +109,7 @@ func TestAPIHandleTaskBadJSON(t *testing.T) {
 	onTask := func(id string, tp uint8, d []byte, to int) (interface{}, error) {
 		return nil, nil
 	}
-	api := NewAPI(":0", onList, onTask)
+	api := NewAPI(":0", "", onList, onTask)
 
 	req := httptest.NewRequest("POST", "/api/v1/task", strings.NewReader("not-json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -128,7 +128,7 @@ func TestAPIHandleTaskDefaultTimeout(t *testing.T) {
 		receivedTimeout = to
 		return nil, nil
 	}
-	api := NewAPI(":0", onList, onTask)
+	api := NewAPI(":0", "", onList, onTask)
 
 	body := `{"session_id":"test","type":3,"data":"/etc/passwd","timeout":0}`
 	req := httptest.NewRequest("POST", "/api/v1/task", strings.NewReader(body))
@@ -151,7 +151,7 @@ func TestAPIHandleTaskMaxTimeout(t *testing.T) {
 		receivedTimeout = to
 		return nil, nil
 	}
-	api := NewAPI(":0", onList, onTask)
+	api := NewAPI(":0", "", onList, onTask)
 
 	body := `{"session_id":"test","type":5,"data":"move","timeout":9999}`
 	req := httptest.NewRequest("POST", "/api/v1/task", strings.NewReader(body))

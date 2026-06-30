@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 
@@ -150,7 +151,10 @@ func (n *NucleiScanner) Scan(target string) ([]VulnFinding, error) {
 	var allFindings []VulnFinding
 	for _, u := range urls {
 		cmd := exec.Command(n.bin, "-u", u, "-jsonl", "-silent")
-		out, _ := cmd.CombinedOutput()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("[nuclei] warning: %v", err)
+		}
 		for _, line := range strings.Split(string(out), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -184,7 +188,10 @@ func (h *HydraBruteForcer) BruteSSH(target string) ([]Credential, error) {
 	userList := h.wordlists + "/top-usernames-shortlist.txt"
 	passList := h.wordlists + "/rockyou.txt"
 	cmd := exec.Command(h.bin, "-L", userList, "-P", passList, "-t", "4", "-f", "ssh://"+target)
-	out, _ := cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[hydra] warning: %v", err)
+	}
 	var creds []Credential
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.Contains(line, "login:") {

@@ -23,7 +23,9 @@ package memory
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -265,7 +267,9 @@ func StopGoroutineTracer() (*ForensicsStats, error) {
 	uprobeMu.Lock()
 	if activeUprobeSpec != nil {
 		for _, l := range activeUprobeSpec.links {
-			_ = l.Close()
+			if err := l.Close(); err != nil {
+				log.Printf("[forensics] close uprobe link: %v", err)
+			}
 		}
 		activeUprobeSpec.links = nil
 		if activeUprobeSpec.collection != nil {
@@ -321,7 +325,7 @@ func GetForensicsStats() ForensicsStats {
 
 // GetAnomalousGoroutines returns records for goroutines flagged as anomalous.
 func GetAnomalousGoroutines() []GoroutineSyscallRecord {
-	var records []GoroutineSyscallRecord
+	records := make([]GoroutineSyscallRecord, 0)
 	anomalousRecords.Range(func(key, value interface{}) bool {
 		rec, ok := value.(*GoroutineSyscallRecord)
 		if !ok {
@@ -360,6 +364,11 @@ func verifyGoRuntimeSymbols(binaryPath string) error {
 // ---------------------------------------------------------------------------
 
 func tracerLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[forensics] tracer loop panic: %v\nstack: %s", r, debug.Stack())
+		}
+	}()
 	defer close(tracerDoneCh)
 
 	// Scan interval for detecting hidden goroutines and anomalous patterns.

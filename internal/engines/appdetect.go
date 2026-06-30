@@ -1,6 +1,6 @@
 // Package engines implements L2 HTTP attack detection (SQL injection, XSS,
 // path traversal) via TCP stream reassembly and L2 brute-force detection
-// (SSH and HTTP authentication attacks) via per-IP rate analysis.
+// (SSH, HTTP, and RDP authentication attacks) via per-IP rate analysis.
 package engines
 
 import (
@@ -203,26 +203,33 @@ const (
 	defaultSSHWindowSec  = 60
 	defaultHTTPThreshold = 15
 	defaultHTTPWindowSec = 60
+	defaultRDPThreshold  = 8
+	defaultRDPWindowSec  = 120
 )
 
-// BruteForceDetector tracks per-IP SSH connection attempts and HTTP
-// authentication failures to detect brute-force attacks.
+// BruteForceDetector tracks per-IP SSH, HTTP, and RDP authentication
+// attempts to detect brute-force attacks.
 //
-// SSH detection: counts SYN packets to port 22. An alert fires when
-// an IP sends defaultSSHThreshold (10) or more attempts within
-// defaultSSHWindowSec (60) seconds.
+// SSH detection: SYN packets to port 22. Alert when IP sends ≥10
+// attempts within 60 seconds.
 //
-// HTTP detection: counts 401/403 responses. An alert fires when an IP
-// receives defaultHTTPThreshold (15) or more failure responses within
-// defaultHTTPWindowSec (60) seconds.
+// HTTP detection: 401/403 responses. Alert when IP receives ≥15
+// failures within 60 seconds.
+//
+// RDP detection: SYN packets to port 3389. Alert when IP sends ≥8
+// attempts within 120 seconds (RDP brute force tools like Crowbar/Hydra
+// use slower timing to avoid lockout).
 type BruteForceDetector struct {
 	mu           sync.Mutex
 	sshAttempts  map[string]*RingBuffer
 	httpFailures map[string]*RingBuffer
+	rdpAttempts  map[string]*RingBuffer
 	sshThresh    int
 	sshWindow    time.Duration
 	httpThresh   int
 	httpWindow   time.Duration
+	rdpThresh    int
+	rdpWindow    time.Duration
 	whitelisted  func(string) bool
 }
 
@@ -231,10 +238,13 @@ func NewBruteForceDetector(cfg *config.Config) *BruteForceDetector {
 	return &BruteForceDetector{
 		sshAttempts:  make(map[string]*RingBuffer),
 		httpFailures: make(map[string]*RingBuffer),
+		rdpAttempts:  make(map[string]*RingBuffer),
 		sshThresh:    defaultSSHThreshold,
 		sshWindow:    defaultSSHWindowSec * time.Second,
 		httpThresh:   defaultHTTPThreshold,
 		httpWindow:   defaultHTTPWindowSec * time.Second,
+		rdpThresh:    defaultRDPThreshold,
+		rdpWindow:    defaultRDPWindowSec * time.Second,
 		whitelisted:  cfg.IsWhitelisted,
 	}
 }
@@ -262,9 +272,18 @@ func (b *BruteForceDetector) FeedHTTPResponse(srcIP string, statusCode int) {
 	rb.Push(time.Now())
 }
 
+// FeedRDP records an RDP connection attempt from srcIP (SYN to port 3389).
+func (b *BruteForceDetector) FeedRDP(srcIP string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	rb := b.ensureRingBuffer(&b.rdpAttempts, srcIP)
+	rb.Push(time.Now())
+}
+
 // CheckAll examines all tracked IPs and returns threats for any that exceed
 // the brute-force thresholds. Each IP is checked independently; a single IP
-// can trigger both SSH and HTTP alerts if both thresholds are exceeded.
+// can trigger multiple alerts (SSH, HTTP, RDP) simultaneously.
 func (b *BruteForceDetector) CheckAll() []Threat {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -277,10 +296,13 @@ func (b *BruteForceDetector) CheckAll() []Threat {
 	filtered := &BruteForceDetector{
 		sshAttempts:  make(map[string]*RingBuffer),
 		httpFailures: make(map[string]*RingBuffer),
+		rdpAttempts:  make(map[string]*RingBuffer),
 		sshThresh:    b.sshThresh,
 		sshWindow:    b.sshWindow,
 		httpThresh:   b.httpThresh,
 		httpWindow:   b.httpWindow,
+		rdpThresh:    b.rdpThresh,
+		rdpWindow:    b.rdpWindow,
 	}
 
 	for ip, rb := range b.sshAttempts {
@@ -293,6 +315,11 @@ func (b *BruteForceDetector) CheckAll() []Threat {
 			filtered.httpFailures[ip] = rb
 		}
 	}
+	for ip, rb := range b.rdpAttempts {
+		if !b.whitelisted(ip) {
+			filtered.rdpAttempts[ip] = rb
+		}
+	}
 	return filtered.checkAllLocked()
 }
 
@@ -301,6 +328,7 @@ func (b *BruteForceDetector) checkAllLocked() []Threat {
 	now := time.Now()
 	sshCutoff := now.Add(-b.sshWindow)
 	httpCutoff := now.Add(-b.httpWindow)
+	rdpCutoff := now.Add(-b.rdpWindow)
 
 	var threats []Threat
 
@@ -324,6 +352,18 @@ func (b *BruteForceDetector) checkAllLocked() []Threat {
 				Type:   "HTTP暴力破解",
 				IP:     ip,
 				Detail: fmt.Sprintf("%d次失败响应/%ds", count, int(b.httpWindow.Seconds())),
+			})
+		}
+	}
+
+	// RDP brute-force: count connection attempts per IP within the window.
+	for ip, rb := range b.rdpAttempts {
+		count := b.countInWindow(rb, rdpCutoff)
+		if count >= b.rdpThresh {
+			threats = append(threats, Threat{
+				Type:   "RDP暴力破解",
+				IP:     ip,
+				Detail: fmt.Sprintf("%d次连接尝试/%ds", count, int(b.rdpWindow.Seconds())),
 			})
 		}
 	}
@@ -359,7 +399,7 @@ func (b *BruteForceDetector) Evict(deadline float64) int {
 	cutoff := time.Unix(int64(deadline), 0)
 	total := 0
 
-	for _, m := range []map[string]*RingBuffer{b.sshAttempts, b.httpFailures} {
+	for _, m := range []map[string]*RingBuffer{b.sshAttempts, b.httpFailures, b.rdpAttempts} {
 		stale := make([]string, 0)
 		for ip, rb := range m {
 			if rb.Len() == 0 || rb.buf[rb.Len()-1].Before(cutoff) {

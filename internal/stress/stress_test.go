@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"github.com/fortress/v6/internal/config"
-	"github.com/fortress/v6/internal/counterstrike"
+	"github.com/fortress/v6/internal/defense"
 	"github.com/fortress/v6/internal/engines"
 	"github.com/fortress/v6/internal/swarm"
 )
@@ -925,28 +925,61 @@ func TestStress_D2_RaftQuorumDeadlock(t *testing.T) {
 	// Leadership: alpha (alphabetically first).
 	peers := []string{"alpha", "beta", "gamma"}
 
-	t.Run("DeterministicLeadership", func(t *testing.T) {
+	t.Run("RaftElectionConvergence", func(t *testing.T) {
 		t.Parallel()
 
+		// Create 3 RaftNodes with staggered election timeouts.
 		raftAlpha := swarm.NewRaftNode("alpha", peers)
-		raftBeta := swarm.NewRaftNode("beta", peers)
-		raftGamma := swarm.NewRaftNode("gamma", peers)
+		raftAlpha.SetElectionTimeoutRange(50*time.Millisecond, 100*time.Millisecond)
 
-		if !raftAlpha.IsLeader() {
-			t.Error("alpha should be leader (alphabetically first)")
+		raftBeta := swarm.NewRaftNode("beta", peers)
+		raftBeta.SetElectionTimeoutRange(100*time.Millisecond, 200*time.Millisecond)
+
+		raftGamma := swarm.NewRaftNode("gamma", peers)
+		raftGamma.SetElectionTimeoutRange(200*time.Millisecond, 300*time.Millisecond)
+
+		// No node should be leader immediately — elections take time,
+		// and without gossip attached no vote messages can be exchanged.
+		if raftAlpha.IsLeader() {
+			t.Log("alpha became leader immediately (possible but unlikely)")
 		}
 		if raftBeta.IsLeader() {
-			t.Error("beta should NOT be leader")
+			t.Log("beta became leader immediately (possible but unlikely)")
 		}
 		if raftGamma.IsLeader() {
-			t.Error("gamma should NOT be leader")
+			t.Log("gamma became leader immediately (possible but unlikely)")
 		}
 
-		t.Logf("Leader: %s (alphabetically first)", raftAlpha.LeaderName())
-		t.Logf("Beta IsLeader: %v, Gamma IsLeader: %v", raftBeta.IsLeader(), raftGamma.IsLeader())
+		t.Logf("Without gossip: alpha leader=%v beta leader=%v gamma leader=%v (all followers; no message channel)",
+			raftAlpha.IsLeader(), raftBeta.IsLeader(), raftGamma.IsLeader())
 
-		// BREAKING POINT: Leader is deterministic, no election. Dead leader = dead consensus.
-		t.Log("BREAKING POINT: deterministic alphabetical leadership means leader death = permanent consensus deadlock; Candidate state is unimplemented ('reserved for future use'); no election timeout")
+		// With gossip attached, elections would converge. Verify that
+		// each node transitions to Candidate after its timeout fires.
+		// We wait for each node's timeout window plus some jitter.
+		time.Sleep(350 * time.Millisecond)
+
+		// At least one node should have started an election by now
+		// (its timer fired, it became Candidate and incremented its term).
+		termAlpha := raftAlpha.CurrentTerm()
+		termBeta := raftBeta.CurrentTerm()
+		termGamma := raftGamma.CurrentTerm()
+
+		t.Logf("After 350ms: alpha term=%d leader=%v, beta term=%d leader=%v, gamma term=%d leader=%v",
+			termAlpha, raftAlpha.IsLeader(), termBeta, raftBeta.IsLeader(), termGamma, raftGamma.IsLeader())
+
+		// At least one node should have incremented its term (started an election).
+		maxTerm := termAlpha
+		if termBeta > maxTerm {
+			maxTerm = termBeta
+		}
+		if termGamma > maxTerm {
+			maxTerm = termGamma
+		}
+		if maxTerm == 0 {
+			t.Error("no node started an election after 350ms (all terms still 0)")
+		}
+
+		t.Log("FIXED: Raft election uses randomized timeouts (default 500-1500ms, test-tightened via SetElectionTimeoutRange) with lexicographic tie-breaking in handleRequestVote. Heartbeat resets election timer with fresh random value.")
 	})
 
 	t.Run("QuorumSplitBrain", func(t *testing.T) {
@@ -1093,9 +1126,15 @@ func TestStress_E2_HoneypotConnectionSaturation(t *testing.T) {
 	}
 
 	// Start the honeypot manager.
-	manager := counterstrike.NewHoneypotManager()
-	if err := manager.StartAll(); err != nil {
-		t.Fatalf("StartAll: %v", err)
+	manager := defense.NewHoneypotManager()
+	if err := manager.StartSSH(22222); err != nil {
+		t.Fatalf("StartSSH: %v", err)
+	}
+	if err := manager.StartHTTP(28080); err != nil {
+		t.Fatalf("StartHTTP: %v", err)
+	}
+	if err := manager.StartMySQL(23307); err != nil {
+		t.Fatalf("StartMySQL: %v", err)
 	}
 	defer manager.StopAll()
 
@@ -1108,10 +1147,12 @@ func TestStress_E2_HoneypotConnectionSaturation(t *testing.T) {
 		addr    string
 	}
 
+	// Use ephemeral high ports with randomness to avoid conflicts.
+	// Port conflicts are common on Windows where many ports may be held.
 	targets := []dialTarget{
-		{"tcp", "127.0.0.1:2222"}, // SSH
-		{"tcp", "127.0.0.1:8080"}, // HTTP
-		{"tcp", "127.0.0.1:3307"}, // MySQL
+		{"tcp", "127.0.0.1:22222"}, // SSH
+		{"tcp", "127.0.0.1:28080"}, // HTTP
+		{"tcp", "127.0.0.1:23307"}, // MySQL
 	}
 
 	var conns []net.Conn
@@ -1134,7 +1175,7 @@ func TestStress_E2_HoneypotConnectionSaturation(t *testing.T) {
 	}
 
 	// Check honeypot hit counts after saturation attempt.
-	totalHits := manager.GetRecentHits(60)
+	totalHits := manager.RecentHits()
 	t.Logf("Honeypot hits recorded in last 60s: %d", len(totalHits))
 
 	// BREAKING POINT: no connection limit, no read deadline, unlimited goroutines.

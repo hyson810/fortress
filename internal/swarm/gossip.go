@@ -14,7 +14,9 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fortress/v6/internal/config"
@@ -113,6 +115,38 @@ type GossipNode struct {
 	conn            *net.UDPConn
 	stopCh          chan struct{}
 	onThreatIntelCBs []func(peerName string, data []byte)
+	stats           GossipStats // atomics for monitoring
+}
+
+// GossipStats tracks messaging performance and health of the gossip node.
+type GossipStats struct {
+	MessagesSent     int64 `json:"messages_sent"`
+	MessagesReceived int64 `json:"messages_received"`
+	ThreatsSent      int64 `json:"threats_sent"`
+	ThreatsReceived  int64 `json:"threats_received"`
+	PeersDiscovered  int64 `json:"peers_discovered"`
+	PingTimeouts     int64 `json:"ping_timeouts"`
+	SuspectEvents    int64 `json:"suspect_events"`
+	DeadEvents       int64 `json:"dead_events"`
+}
+
+// GetStats returns a snapshot of gossip performance counters.
+func (g *GossipNode) GetStats() GossipStats {
+	var s GossipStats
+	s.MessagesSent = atomic.LoadInt64(&g.stats.MessagesSent)
+	s.MessagesReceived = atomic.LoadInt64(&g.stats.MessagesReceived)
+	s.ThreatsSent = atomic.LoadInt64(&g.stats.ThreatsSent)
+	s.ThreatsReceived = atomic.LoadInt64(&g.stats.ThreatsReceived)
+	s.PeersDiscovered = atomic.LoadInt64(&g.stats.PeersDiscovered)
+	s.PingTimeouts = atomic.LoadInt64(&g.stats.PingTimeouts)
+	s.SuspectEvents = atomic.LoadInt64(&g.stats.SuspectEvents)
+	s.DeadEvents = atomic.LoadInt64(&g.stats.DeadEvents)
+	return s
+}
+
+// incStats atomically increments a stats counter by 1.
+func (g *GossipNode) incStats(field *int64) {
+		atomic.AddInt64(field, 1)
 }
 
 // NewGossipNode creates a UDP socket bound to cfg.Bind, seeds the peer table
@@ -184,10 +218,11 @@ func (g *GossipNode) Stop() {
 	log.Printf("[swarm] %s stopped", g.config.Name)
 }
 
-// BroadcastThreatIntel pushes threat intelligence data to 3 random alive
-// peers via threat_intel messages. This triggers epidemic propagation through
-// the swarm.
-func (g *GossipNode) BroadcastThreatIntel(data []byte) {
+// BroadcastThreatIntel pushes threat intelligence data to all alive peers
+// via threat_intel messages. Returns the number of peers the message was
+// successfully sent to. Unlike fire-and-forget, this sends to every alive
+// peer (not a random subset) for maximum reliability.
+func (g *GossipNode) BroadcastThreatIntel(data []byte) int {
 	msg := GossipMessage{
 		Type:       "threat_intel",
 		NodeName:   g.config.Name,
@@ -196,13 +231,63 @@ func (g *GossipNode) BroadcastThreatIntel(data []byte) {
 		Timestamp:  time.Now().Unix(),
 	}
 
+	return g.broadcastToAll(msg)
+}
+
+// BroadcastThreatIntelReliable sends threat intel with delivery confirmation.
+// Blocks until at least one peer ACKs or all peers fail.
+// Returns true if at least one peer confirmed receipt.
+func (g *GossipNode) BroadcastThreatIntelReliable(data []byte) bool {
+	msg := GossipMessage{
+		Type:       "threat_intel_ack",
+		NodeName:   g.config.Name,
+		Addr:       g.localAddr,
+		ThreatData: data,
+		Timestamp:  time.Now().Unix(),
+	}
+
 	g.mu.RLock()
-	targets := g.pickRandomAlive(threatIntelFanout)
+	var targets []*Peer
+	for _, p := range g.peers {
+		if p.State == PeerAlive {
+			targets = append(targets, p)
+		}
+	}
+	g.mu.RUnlock()
+
+	if len(targets) == 0 {
+		return false
+	}
+
+	// Try confirmed delivery to each peer via sendAndWait.
+	// Return on first ACK.
+	for _, p := range targets {
+		reply, err := g.sendAndWait(p.Addr, msg, 500*time.Millisecond)
+		if err == nil && reply != nil {
+			return true
+		}
+	}
+
+	// Fall back to fire-and-forget broadcast to all alive peers.
+	g.broadcastToAll(msg)
+	return false
+}
+
+// broadcastToAll sends a message to every alive peer. Returns success count.
+func (g *GossipNode) broadcastToAll(msg GossipMessage) int {
+	g.mu.RLock()
+	var targets []*Peer
+	for _, p := range g.peers {
+		if p.State == PeerAlive {
+			targets = append(targets, p)
+		}
+	}
 	g.mu.RUnlock()
 
 	for _, p := range targets {
 		g.sendTo(p.Addr, msg)
 	}
+	return len(targets)
 }
 
 // OnThreatIntel registers a callback invoked when a threat_intel message is
@@ -245,6 +330,11 @@ func (g *GossipNode) PeerCount() int {
 // ---------------------------------------------------------------------------
 
 func (g *GossipNode) recvLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[swarm] recv loop panic: %v\nstack: %s", r, debug.Stack())
+		}
+	}()
 	buf := make([]byte, udpBufSize)
 	for {
 		select {
@@ -281,6 +371,7 @@ func (g *GossipNode) recvLoop() {
 		}
 
 		g.handleMessage(msg, remote)
+		atomic.AddInt64(&g.stats.MessagesReceived, 1)
 	}
 }
 
@@ -289,6 +380,11 @@ func (g *GossipNode) recvLoop() {
 // ---------------------------------------------------------------------------
 
 func (g *GossipNode) gossipLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[swarm] gossip loop panic: %v\nstack: %s", r, debug.Stack())
+		}
+	}()
 	pingTick := time.NewTicker(pingInterval)
 	deadTick := time.NewTicker(deadProbeInterval)
 	suspectTick := time.NewTicker(suspectCheckInterval)
@@ -392,8 +488,8 @@ func (g *GossipNode) handleMessage(msg GossipMessage, remote *net.UDPAddr) {
 		g.handleAck(msg, remote)
 	case "indirect_ping":
 		g.handleIndirectPing(msg, remote)
-	case "threat_intel":
-		g.handleThreatIntel(msg)
+	case "threat_intel", "threat_intel_ack":
+		g.handleThreatIntel(msg, remote)
 	case "join":
 		g.handleJoin(msg)
 	case "leave":
@@ -485,7 +581,18 @@ func (g *GossipNode) handleIndirectPing(msg GossipMessage, remote *net.UDPAddr) 
 	}
 }
 
-func (g *GossipNode) handleThreatIntel(msg GossipMessage) {
+func (g *GossipNode) handleThreatIntel(msg GossipMessage, remote *net.UDPAddr) {
+	// If an ACK was requested (threat_intel_ack type), send confirmation.
+	if msg.Type == "threat_intel_ack" && remote != nil {
+		ack := GossipMessage{
+			Type:       "threat_intel_ack_resp",
+			NodeName:   g.config.Name,
+			Addr:       g.localAddr,
+			Timestamp:  time.Now().Unix(),
+		}
+		g.sendRaw(remote, ack)
+	}
+
 	g.mu.RLock()
 	cbs := g.onThreatIntelCBs
 	g.mu.RUnlock()
@@ -496,15 +603,17 @@ func (g *GossipNode) handleThreatIntel(msg GossipMessage) {
 		}
 	}
 
-	// Epidemic fan-out: forward to 3 random peers (excluding originator).
+	// Epidemic fan-out: forward to all alive peers (excluding originator).
 	g.mu.RLock()
-	targets := g.pickRandomAlive(threatIntelFanout)
+	var targets []*Peer
+	for _, p := range g.peers {
+		if p.State == PeerAlive && p.Addr != msg.Addr {
+			targets = append(targets, p)
+		}
+	}
 	g.mu.RUnlock()
 
 	for _, p := range targets {
-		if p.Addr == msg.Addr {
-			continue
-		}
 		g.sendTo(p.Addr, msg)
 	}
 }
@@ -628,6 +737,7 @@ func (g *GossipNode) sendRaw(addr *net.UDPAddr, msg GossipMessage) error {
 	if _, err := g.conn.WriteToUDP(data, addr); err != nil {
 		return fmt.Errorf("write to %s: %w", addr, err)
 	}
+		atomic.AddInt64(&g.stats.MessagesSent, 1)
 	return nil
 }
 
