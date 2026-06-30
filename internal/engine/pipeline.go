@@ -27,8 +27,10 @@ import (
 	"time"
 
 	"github.com/fortress/v6/internal/brain"
+	"github.com/fortress/v6/internal/capture"
 	"github.com/fortress/v6/internal/config"
 	"github.com/fortress/v6/internal/engines"
+	"github.com/fortress/v6/internal/suricata"
 )
 
 // PipelineStage identifies a detection layer in the pipeline.
@@ -132,6 +134,10 @@ type DetectionPipeline struct {
 	lotlDetector          *engines.LotLDetector
 	correlationEngine     *engines.CorrelationEngine
 
+	// Capture + Suricata
+	captureHandler capture.CaptureHandler
+	suricataEngine *suricata.Engine
+
 	// Brain — sharded lock-free scorer (190-204% faster than mutex version)
 	scorer *brain.ShardScorer
 
@@ -190,7 +196,47 @@ func NewDetectionPipeline(cfg *config.Config) *DetectionPipeline {
 	// Use lock-free 64-shard scorer — 273% throughput gain on 16 workers
 	p.scorer = brain.NewShardScorer(weights, 1800, 10000)
 
+	// Initialize Suricata + capture (if enabled)
+	if err := p.EnableSuricata(); err != nil {
+		log.Printf("[pipeline] suricata init: %v", err)
+	}
+
 	return p
+}
+
+// EnableSuricata initializes the capture handler and Suricata rule engine.
+// Must be called before Start().
+func (p *DetectionPipeline) EnableSuricata() error {
+	cfg := p.cfg
+	if !cfg.Suricata.Enabled {
+		return nil
+	}
+
+	// Initialize capture handler
+	if cfg.Capture.Mode == "afpacket" {
+		handler, err := capture.NewAFPacketHandler(capture.AFPacketConfig{
+			Interface:    cfg.Capture.Interface,
+			BufferFrames: cfg.Capture.BufferFrames,
+			BufferSize:   cfg.Capture.BufferSize,
+			Promisc:      cfg.Capture.Promisc,
+			Fanout:       cfg.Capture.Fanout,
+		})
+		if err != nil {
+			return fmt.Errorf("afpacket: %w", err)
+		}
+		p.captureHandler = handler
+	} else {
+		p.captureHandler = capture.NewInjectHandler()
+	}
+
+	// Initialize Suricata engine
+	eng, err := suricata.NewEngine(cfg.Suricata.RulesPath, cfg.Suricata.WorkerPool)
+	if err != nil {
+		return fmt.Errorf("suricata engine: %w", err)
+	}
+	p.suricataEngine = eng
+
+	return nil
 }
 
 // Start launches all detection goroutines in a sequential pipeline.
@@ -216,6 +262,13 @@ func (p *DetectionPipeline) Start() {
 	p.wg.Add(1)
 	go p.runScorer()
 
+	// Suricata engine — capture + rule-based detection
+	if p.suricataEngine != nil {
+		p.suricataEngine.Start(p.ctx, p.captureHandler)
+		p.wg.Add(1)
+		go p.feedSuricataAlerts()
+	}
+
 	log.Printf("[pipeline] sequential pipeline started: packetCh→L1→L2→L3→L4→L5→L6→L7→scorer")
 }
 
@@ -224,6 +277,11 @@ func (p *DetectionPipeline) Stop() {
 	close(p.stopCh)
 	p.cancel()
 	p.wg.Wait()
+
+	if p.captureHandler != nil {
+		p.captureHandler.Close()
+	}
+
 	log.Printf("[pipeline] stopped — processed=%d dropped=%d threats=%d scorer=%d",
 		atomic.LoadUint64(&p.stats.PacketsProcessed),
 		atomic.LoadUint64(&p.stats.PacketsDropped),
@@ -453,6 +511,25 @@ func (p *DetectionPipeline) runScorer() {
 			if p.onThreat != nil {
 				p.onThreat(t.IP, score, level)
 			}
+		}
+	}
+}
+
+// feedSuricataAlerts forwards Suricata rule matches to the brain scorer.
+// It reads alerts from the Suricata engine's alert channel and scores the
+// source IP using the intel match weight scaled by alert severity.
+func (p *DetectionPipeline) feedSuricataAlerts() {
+	defer p.wg.Done()
+	alertCh := p.suricataEngine.Alerts()
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case alert, ok := <-alertCh:
+			if !ok {
+				return
+			}
+			p.scorer.AddIntelMatch(alert.SrcIP, alert.Msg)
 		}
 	}
 }
