@@ -242,13 +242,20 @@ func protoToString(p uint8) Proto {
 }
 
 // extractPayload extracts the application-layer payload from a raw ethernet
-// frame. Simplified: skips ethernet header (14 bytes) + IPv4 header (20
-// bytes) = 34 bytes minimum. Returns nil if the raw frame is too short.
+// frame. Skips the ethernet header (14 bytes) and reads the IPv4 header
+// length from the IHL field (lower 4 bits of byte 14), which can be 20-60
+// bytes. Returns nil if the raw frame is too short.
 func extractPayload(raw []byte) []byte {
-	if len(raw) < 34 {
+	const ethHeaderLen = 14
+	if len(raw) < ethHeaderLen+20 { // minimum: ethernet + IPv4
 		return nil
 	}
-	return raw[34:]
+	// IHL is the lower 4 bits of byte 14 (start of IPv4 header)
+	ihl := int(raw[ethHeaderLen]&0x0f) * 4
+	if ihl < 20 || ihl > 60 || len(raw) < ethHeaderLen+ihl {
+		return nil
+	}
+	return raw[ethHeaderLen+ihl:]
 }
 
 // matchFlags checks whether the packet's TCP flags satisfy the rule's flag
