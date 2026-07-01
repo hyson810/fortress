@@ -7,7 +7,7 @@
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)]()
 [![Rust](https://img.shields.io/badge/Rust-1.78+-DEA584?logo=rust&logoColor=white)]()
 [![License](https://img.shields.io/badge/License-Apache%202.0-green)]()
-[![CI](https://img.shields.io/github/actions/workflow/status/hyson810/fortress/ci.yml?label=CI&logo=github)]()
+[![CI](https://img.shields.io/github/actions/workflow/status/hyson810/fortress/.github/workflows/ci.yml?label=CI&logo=github)]()
 [![Stars](https://img.shields.io/github/stars/hyson810/fortress?style=social)]()
 [![eBPF](https://img.shields.io/badge/eBPF-XDP-blueviolet)]()
 [![SWIM](https://img.shields.io/badge/SWIM-P2P-orange)]()
